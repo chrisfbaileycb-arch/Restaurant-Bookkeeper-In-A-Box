@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Restaurant Bookkeeper in a Box</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.5rem; }
+  section { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  textarea { width: 100%; min-height: 160px; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+  button { padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid currentColor; background: transparent; cursor: pointer; font-size: 0.95rem; }
+  button:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+  input[type=month] { padding: 0.4rem; border-radius: 6px; border: 1px solid currentColor; background: transparent; color: inherit; }
+  pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; white-space: pre-wrap; }
+  .disclaimer { border-left: 4px solid #c90; padding: 0.5rem 1rem; margin: 0.75rem 0; font-size: 0.9rem; }
+  .muted { opacity: 0.7; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>📒 Restaurant Bookkeeper in a Box</h1>
+<p class="muted">Restaurant POS data cleanup &amp; QuickBooks sync. Import POS transaction CSVs, strict-validate them, and export reconciled daily sales receipts mapped to QuickBooks clearing accounts.</p>
+<p><a href="/ledger.html"><strong>→ Ledger &amp; Compliance console</strong></a> — standalone double-entry ledger, P&amp;L / Balance Sheet / COGS reports, Colorado tax deadlines, and QuickBooks-optional exports (QBO CSV + IIF).</p>
+<p class="muted"><strong>$149/month.</strong> Imports and exports require an active subscription — if a request returns <code>subscription_required</code>, follow the checkout link in the response (or contact the owner for access).</p>
+
+<section>
+  <h2>1 · Import POS CSV</h2>
+  <p class="muted">Paste the canonical 16-column transaction CSV. Validation is all-or-nothing: any bad row rejects the whole file.</p>
+  <textarea id="csv" placeholder="transaction_id,source_pos,business_date,timestamp,gross_sales,..."></textarea>
+  <p><button id="importBtn">Import CSV</button></p>
+  <div id="importDisclaimer"></div>
+  <pre id="importOut" hidden></pre>
+</section>
+
+<section>
+  <h2>2 · Import status (cadence watchdog)</h2>
+  <p><button id="statusBtn">Check status</button></p>
+  <pre id="statusOut" hidden></pre>
+</section>
+
+<section>
+  <h2>3 · Export — one month at a time</h2>
+  <p class="muted">QuickBooks rejects imports larger than about one month, so exports are month-scoped. Pick the month, then export.</p>
+  <p>
+    <label>Month: <input type="month" id="month"></label>
+    <button id="exportQboBtn">QuickBooks sales receipts</button>
+    <button id="exportCsvBtn">Download month CSV</button>
+    <button id="exportAllBtn" title="Full archive backup — not for QuickBooks import">Full archive CSV</button>
+  </p>
+  <div id="exportDisclaimer"></div>
+  <pre id="exportOut" hidden></pre>
+</section>
+
+<script>
+// The API refuses high-stakes actions with 428 + the disclaimer payload until
+// the caller re-submits with the ack header. acks{} remembers per-action consent.
+const acks = {};
+
+async function callWithAck(action, mount, doFetch) {
+  const res = await doFetch(acks[action] ? { 'x-expoproxy-ack': acks[action] } : {});
+  if (res.status === 428) {
+    const payload = await res.json();
+    const d = payload.disclaimer;
+    const box = document.getElementById(mount);
+    box.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'disclaimer';
+    const strong = document.createElement('strong');
+    strong.textContent = d.title;
+    const p = document.createElement('p');
+    p.textContent = d.text;
+    const btn = document.createElement('button');
+    btn.textContent = 'I acknowledge — proceed';
+    btn.onclick = () => {
+      acks[action] = payload.requiredAckValue;
+      box.innerHTML = '';
+      callWithAck(action, mount, doFetch);
+    };
+    div.append(strong, p, btn);
+    box.append(div);
+    return null;
+  }
+  return res;
+}
+
+function show(id, text) {
+  const el = document.getElementById(id);
+  el.hidden = false;
+  el.textContent = text;
+}
+
+function requireMonth() {
+  const m = document.getElementById('month').value;
+  if (!m) {
+    show('exportOut', 'Pick a month first — QuickBooks exports must be one month at a time.');
+    return null;
+  }
+  return m;
+}
+
+document.getElementById('importBtn').onclick = async () => {
+  const res = await callWithAck('manual_import', 'importDisclaimer', (headers) =>
+    fetch('/api/import/csv', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ csv: document.getElementById('csv').value }),
+    }));
+  if (res) show('importOut', JSON.stringify(await res.json(), null, 2));
+};
+
+document.getElementById('statusBtn').onclick = async () => {
+  const res = await fetch('/api/import/status');
+  show('statusOut', JSON.stringify(await res.json(), null, 2));
+};
+
+document.getElementById('exportQboBtn').onclick = async () => {
+  const m = requireMonth();
+  if (!m) return;
+  const res = await callWithAck('data_export', 'exportDisclaimer', (headers) =>
+    fetch('/api/export/quickbooks?month=' + encodeURIComponent(m), { headers }));
+  if (res) show('exportOut', JSON.stringify(await res.json(), null, 2));
+};
+
+document.getElementById('exportCsvBtn').onclick = async () => {
+  const m = requireMonth();
+  if (!m) return;
+  const res = await callWithAck('data_export', 'exportDisclaimer', (headers) =>
+    fetch('/api/export/csv?month=' + encodeURIComponent(m), { headers }));
+  if (res) show('exportOut', await res.text());
+};
+
+document.getElementById('exportAllBtn').onclick = async () => {
+  const res = await callWithAck('data_export', 'exportDisclaimer', (headers) =>
+    fetch('/api/export/csv', { headers }));
+  if (res) show('exportOut', await res.text());
+};
+</script>
+</body>
+</html>

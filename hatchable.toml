@@ -1,0 +1,5 @@
+# Daily compliance-deadline check: refresh estimated amounts from ledger
+# liability balances and advance statuses (UPCOMING → DUE_SOON → OVERDUE).
+[[cron]]
+path     = "/api/cron/compliance"
+schedule = "0 12 * * *"

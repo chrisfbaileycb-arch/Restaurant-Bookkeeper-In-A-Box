@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ledger · Restaurant Bookkeeper in a Box</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; }
+  section { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  #wsBar { background: color-mix(in srgb, currentColor 6%, transparent); }
+  textarea { width: 100%; min-height: 130px; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+  button { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid currentColor; background: transparent; cursor: pointer; margin: 0.15rem 0.2rem 0.15rem 0; }
+  button:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+  input, select { padding: 0.35rem; border-radius: 6px; border: 1px solid currentColor; background: transparent; color: inherit; }
+  pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.78rem; white-space: pre-wrap; }
+  .disclaimer { border-left: 4px solid #c90; padding: 0.5rem 1rem; margin: 0.75rem 0; font-size: 0.9rem; }
+  .muted { opacity: 0.7; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>📒 Ledger &amp; Compliance · <a href="/">Restaurant Bookkeeper in a Box</a></h1>
+<p class="muted">Standalone double-entry ledger — works with or without QuickBooks. One login, multiple isolated location workspaces; everything below operates on the ACTIVE location.</p>
+
+<section id="wsBar">
+  <strong>Workspace:</strong> <span id="wsInfo" class="muted">loading…</span>
+  <span id="wsControls" hidden>
+    <select id="wsSelect"></select>
+    <button id="wsSwitch">Switch</button>
+    <input id="newLocName" placeholder="new location name">
+    <button id="wsAdd">Add location</button>
+  </span>
+  <div id="wsSetup" hidden>
+    <p class="muted">No organization yet — create one to start:</p>
+    <input id="orgName" placeholder="organization name">
+    <select id="orgPlan">
+      <option value="single">Single — 1 location ($149/mo)</option>
+      <option value="group">Group — up to 3 locations ($249/mo)</option>
+      <option value="premium_group">Premium Group — 4–7 locations ($499/mo)</option>
+    </select>
+    <input id="firstLoc" placeholder="first location name">
+    <button id="wsCreate">Create organization</button>
+  </div>
+  <pre id="wsOut" hidden></pre>
+</section>
+
+<section>
+  <h2>1 · Import journal CSV</h2>
+  <p class="muted">Universal schema: <code>date,journal_no,account_name,description,debit,credit,category_tag,source</code>. Debits and credits must balance per journal_no — all-or-nothing.</p>
+  <textarea id="jcsv" placeholder="date,journal_no,account_name,description,debit,credit,category_tag,source"></textarea>
+  <p><button id="importBtn">Import to ledger</button>
+     <label style="margin-left:1rem">or post POS daily sales for <input id="dsMonth" type="month" style="width:11rem"></label>
+     <button id="dsBtn">Post daily sales</button></p>
+  <div id="importDisclaimer"></div>
+  <pre id="importOut" hidden></pre>
+</section>
+
+<section>
+  <h2>2 · Reports</h2>
+  <p>
+    <label>From <input id="from" type="date"></label>
+    <label>To <input id="to" type="date"></label>
+    <button data-report="/api/reports/profit-loss">P&amp;L</button>
+    <button data-report="/api/reports/cogs">COGS</button>
+    <button data-report="/api/reports/balance-sheet">Balance Sheet</button>
+    <button data-report="/api/ledger/accounts">Trial Balance</button>
+  </p>
+  <pre id="reportOut" hidden></pre>
+</section>
+
+<section>
+  <h2>3 · QuickBooks bridge (optional)</h2>
+  <p class="muted">One month at a time. QBO CSV imports via Settings → Import Data → Journal Entries; IIF is for QuickBooks Desktop.</p>
+  <p>
+    <label>Month <input id="qbMonth" type="month" style="width:11rem"></label>
+    <button id="qboBtn">QBO journal CSV</button>
+    <button id="iifBtn">IIF (QB Desktop)</button>
+  </p>
+  <div id="exportDisclaimer"></div>
+  <pre id="exportOut" hidden></pre>
+</section>
+
+<section>
+  <h2>4 · Check reconciliation</h2>
+  <p class="muted">Register: <code>check_number,check_date,payee,written_amount,memo,bank_account_id</code>. Cleared (bank CSV): <code>check_number,cleared_date,cleared_amount,description,routing_number,account_number_last4,bank_account_id</code>. bank_account_id blank → primary. Matching runs automatically on bank import: cleared, amount_mismatch, or missing_from_register.</p>
+  <textarea id="recCsv" placeholder="paste register or cleared-checks CSV here"></textarea>
+  <p>
+    <button id="regBtn">Import check register</button>
+    <button id="bankBtn">Import cleared checks + match</button>
+    <button id="outBtn">Outstanding checks</button>
+  </p>
+  <p>
+    <label>As of <input id="recAsOf" type="date"></label>
+    <label>Starting bank balance <input id="startBal" type="number" step="0.01" style="width:8rem"></label>
+    <button id="recBtn">Reconciliation report</button>
+  </p>
+  <div id="recDisclaimer"></div>
+  <pre id="recOut" hidden></pre>
+</section>
+
+<section>
+  <h2>5 · Compliance calendar</h2>
+  <p class="muted">Colorado + federal filing deadlines for this location. Amounts due are pulled live from ledger liability balances.</p>
+  <p><button id="compBtn">Show deadlines</button></p>
+  <pre id="compOut" hidden></pre>
+</section>
+
+<script>
+const acks = {};
+async function callWithAck(action, mount, doFetch) {
+  const res = await doFetch(acks[action] ? { 'x-expoproxy-ack': acks[action] } : {});
+  if (res.status === 428) {
+    const payload = await res.json();
+    const box = document.getElementById(mount);
+    box.innerHTML = '';
+    const div = document.createElement('div');
+    div.className = 'disclaimer';
+    const strong = document.createElement('strong'); strong.textContent = payload.disclaimer.title;
+    const p = document.createElement('p'); p.textContent = payload.disclaimer.text;
+    const btn = document.createElement('button'); btn.textContent = 'I acknowledge — proceed';
+    btn.onclick = () => { acks[action] = payload.requiredAckValue; box.innerHTML = ''; callWithAck(action, mount, doFetch); };
+    div.append(strong, p, btn); box.append(div);
+    return null;
+  }
+  return res;
+}
+const el = (id) => document.getElementById(id);
+function show(id, text) { el(id).hidden = false; el(id).textContent = text; }
+
+// ── Workspace bar ───────────────────────────────────────────────────────────
+async function loadWorkspace() {
+  const res = await fetch('/api/org/me');
+  if (res.status === 409) {
+    el('wsInfo').textContent = '';
+    el('wsSetup').hidden = false;
+    el('wsControls').hidden = true;
+    return;
+  }
+  if (!res.ok) { el('wsInfo').textContent = 'unavailable (' + res.status + ')'; return; }
+  const me = await res.json();
+  el('wsSetup').hidden = true;
+  el('wsControls').hidden = false;
+  el('wsInfo').textContent = me.organization.name + ' (' + me.organization.plan + ') — active: ' + me.activeLocation.name;
+  const sel = el('wsSelect');
+  sel.innerHTML = '';
+  for (const l of me.locations) {
+    const opt = document.createElement('option');
+    opt.value = l.id; opt.textContent = l.name;
+    if (l.id === me.activeLocation.id) opt.selected = true;
+    sel.append(opt);
+  }
+}
+el('wsCreate') && (el('wsCreate').onclick = async () => {
+  const res = await fetch('/api/org/setup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: el('orgName').value, plan: el('orgPlan').value, locationName: el('firstLoc').value }),
+  });
+  show('wsOut', JSON.stringify(await res.json(), null, 2));
+  loadWorkspace();
+});
+el('wsSwitch').onclick = async () => {
+  const res = await fetch('/api/org/switch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ locationId: Number(el('wsSelect').value) }),
+  });
+  show('wsOut', JSON.stringify(await res.json(), null, 2));
+  loadWorkspace();
+};
+el('wsAdd').onclick = async () => {
+  const res = await fetch('/api/org/locations', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: el('newLocName').value }),
+  });
+  show('wsOut', JSON.stringify(await res.json(), null, 2));
+  loadWorkspace();
+};
+loadWorkspace();
+
+// ── Ledger ───────────────────────────────────────────────────────────────
+el('importBtn').onclick = async () => {
+  const res = await callWithAck('manual_import', 'importDisclaimer', (h) =>
+    fetch('/api/ledger/import', { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ csv: el('jcsv').value }) }));
+  if (res) show('importOut', JSON.stringify(await res.json(), null, 2));
+};
+el('dsBtn').onclick = async () => {
+  const month = el('dsMonth').value;
+  if (!month) return show('importOut', 'Pick a month first.');
+  const res = await callWithAck('manual_import', 'importDisclaimer', (h) =>
+    fetch('/api/ledger/post-daily-sales', { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ month }) }));
+  if (res) show('importOut', JSON.stringify(await res.json(), null, 2));
+};
+
+document.querySelectorAll('[data-report]').forEach((btn) => {
+  btn.onclick = async () => {
+    const qs = new URLSearchParams();
+    if (el('from').value) qs.set('from', el('from').value);
+    if (el('to').value) { qs.set('to', el('to').value); qs.set('as_of', el('to').value); }
+    const res = await fetch(btn.dataset.report + (qs.size ? '?' + qs : ''));
+    show('reportOut', JSON.stringify(await res.json(), null, 2));
+  };
+});
+
+async function exportQb(path) {
+  const month = el('qbMonth').value;
+  if (!month) return show('exportOut', 'Pick a month first — QuickBooks exports are one month at a time.');
+  const res = await callWithAck('data_export', 'exportDisclaimer', (h) =>
+    fetch(path + '?month=' + encodeURIComponent(month), { headers: h }));
+  if (res) show('exportOut', await res.text());
+}
+el('qboBtn').onclick = () => exportQb('/api/export/qbo-journal');
+el('iifBtn').onclick = () => exportQb('/api/export/iif');
+
+// ── Check reconciliation ───────────────────────────────────────────────────
+el('regBtn').onclick = async () => {
+  const res = await callWithAck('manual_import', 'recDisclaimer', (h) =>
+    fetch('/api/checks/import', { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ csv: el('recCsv').value }) }));
+  if (res) show('recOut', JSON.stringify(await res.json(), null, 2));
+};
+el('bankBtn').onclick = async () => {
+  const res = await callWithAck('manual_import', 'recDisclaimer', (h) =>
+    fetch('/api/bank/import', { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ csv: el('recCsv').value }) }));
+  if (res) show('recOut', JSON.stringify(await res.json(), null, 2));
+};
+el('outBtn').onclick = async () => {
+  const res = await fetch('/api/checks/register?status=outstanding');
+  show('recOut', JSON.stringify(await res.json(), null, 2));
+};
+el('recBtn').onclick = async () => {
+  const qs = new URLSearchParams();
+  if (el('recAsOf').value) qs.set('as_of', el('recAsOf').value);
+  if (el('startBal').value) qs.set('starting_balance', el('startBal').value);
+  const res = await fetch('/api/reconciliation/report' + (qs.size ? '?' + qs : ''));
+  show('recOut', JSON.stringify(await res.json(), null, 2));
+};
+
+el('compBtn').onclick = async () => {
+  const res = await fetch('/api/compliance/events');
+  show('compOut', JSON.stringify(await res.json(), null, 2));
+};
+</script>
+</body>
+</html>
