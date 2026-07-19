@@ -48,9 +48,10 @@ RLS-ready if migrated to raw Postgres/Supabase.)
 1. **POS import** — strict all-or-nothing CSV validation (16-column
    NormalizedTransaction contract), prototype-pollution sanitization,
    idempotent per-location dedup, weekly cadence watchdog.
-2. **Ledger** — double-entry journal with balance validation, 42-account
-   restaurant COA template copied per organization, one-click daily-sales
-   posting from the POS store.
+2. **Ledger** — double-entry journal with balance validation, 48-account
+   restaurant COA template copied per organization (hierarchical beverage
+   COGS sub-accounts + per-account 1120-S tax-line mapping), one-click
+   daily-sales posting from the POS store.
 3. **Reports** — P&L (with food/beverage-cost KPIs), Balance Sheet (with
    integrity check), COGS summary, trial balance. JSON + CSV.
 4. **QuickBooks bridge (optional)** — Tier 1: QBO journal-entry CSV
