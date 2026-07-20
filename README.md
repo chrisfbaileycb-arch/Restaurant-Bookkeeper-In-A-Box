@@ -73,6 +73,11 @@ RLS-ready if migrated to raw Postgres/Supabase.)
    categorization to COGS accounts, automatic AP journal posting, aging
    report (0-15/16-30/31+), and payment recording (books only — no money
    movement) with check-register integration.
+9. **Payroll journal import** — records pay runs executed by the operator's
+   third-party payroll service (never moves money): BOH/FOH wage split,
+   employer taxes, withholding liabilities that feed the compliance
+   calendar, provider-remitted tax handling, and prime-cost KPIs
+   (COGS + labor vs the 65% threshold) on the P&L.
 
 ## Configuration (environment variables — never committed)
 
