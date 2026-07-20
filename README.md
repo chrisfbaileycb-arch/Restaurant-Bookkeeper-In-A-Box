@@ -88,6 +88,14 @@ RLS-ready if migrated to raw Postgres/Supabase.)
     delivery payouts, safe drops) and posted to cash; check withdrawals
     routed into the check matcher; unidentified rows parked unmatched for
     review — never auto-posted.
+12. **Physical inventory** — periodic counts with ledger-vs-physical
+    variances posted to dedicated COGS adjustment accounts (shrink/waste
+    stays visible separately from purchases). Comparative period P&L
+    included.
+13. **POS daily summaries** — Toast/Clover/Square day-end normalizer with
+    real category splits (no hardcoded ratios), cash drawer over/short from
+    actual safe-drop counts, processing-fee isolation, and card collections
+    held in clearing for bank matching.
 
 ## Configuration (environment variables — never committed)
 
