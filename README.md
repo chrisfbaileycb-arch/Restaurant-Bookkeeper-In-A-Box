@@ -69,6 +69,10 @@ RLS-ready if migrated to raw Postgres/Supabase.)
    location's ledger cash account.
 7. **Billing** — subscription paywall on operator routes; Stripe webhook
    activation; admin comp/grant override.
+8. **AP subledger** — supplier invoice CSV import with rule-based line
+   categorization to COGS accounts, automatic AP journal posting, aging
+   report (0-15/16-30/31+), and payment recording (books only — no money
+   movement) with check-register integration.
 
 ## Configuration (environment variables — never committed)
 
