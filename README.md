@@ -83,6 +83,11 @@ RLS-ready if migrated to raw Postgres/Supabase.)
     commissions, marketing fees, and refunds (contra-revenue), with payouts
     held in a clearing account until bank matching clears them. Tracks each
     platform's effective take rate.
+11. **Bank feed matching** — full statement import: deposits keyword-matched
+    to clearing accounts (card settlements with merchant-fee isolation,
+    delivery payouts, safe drops) and posted to cash; check withdrawals
+    routed into the check matcher; unidentified rows parked unmatched for
+    review — never auto-posted.
 
 ## Configuration (environment variables — never committed)
 
