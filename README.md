@@ -78,6 +78,11 @@ RLS-ready if migrated to raw Postgres/Supabase.)
    employer taxes, withholding liabilities that feed the compliance
    calendar, provider-remitted tax handling, and prime-cost KPIs
    (COGS + labor vs the 65% threshold) on the P&L.
+10. **Delivery reconciliation** — DoorDash/UberEats/Grubhub payout
+    statements with an enforced reconciliation identity; posts gross sales,
+    commissions, marketing fees, and refunds (contra-revenue), with payouts
+    held in a clearing account until bank matching clears them. Tracks each
+    platform's effective take rate.
 
 ## Configuration (environment variables — never committed)
 
