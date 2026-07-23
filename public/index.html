@@ -3,138 +3,440 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Restaurant Bookkeeper in a Box</title>
+<title>Restaurant Bookkeeper in a Box — Daybook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  h1 { font-size: 1.5rem; }
-  section { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
-  textarea { width: 100%; min-height: 160px; font-family: ui-monospace, monospace; font-size: 0.8rem; }
-  button { padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid currentColor; background: transparent; cursor: pointer; font-size: 0.95rem; }
-  button:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
-  input[type=month] { padding: 0.4rem; border-radius: 6px; border: 1px solid currentColor; background: transparent; color: inherit; }
-  pre { background: color-mix(in srgb, currentColor 8%, transparent); padding: 0.75rem; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; white-space: pre-wrap; }
-  .disclaimer { border-left: 4px solid #c90; padding: 0.5rem 1rem; margin: 0.75rem 0; font-size: 0.9rem; }
-  .muted { opacity: 0.7; font-size: 0.85rem; }
+/* ── Classical tokens (ported from the design handoff — visual source of truth) ── */
+:root {
+  --color-bg: #f3f2f2;
+  --color-text: #201f1d;
+  --color-accent: #b68235;
+  --color-accent-700: #8a5f22;
+  --color-surface: #fbfaf9;
+  --color-divider: #e0ddd8;
+  --color-neutral-500: #8f8b84;
+  --color-neutral-600: #767268;
+  --font-heading: 'Cormorant Garamond', Georgia, serif;
+  --font-body: 'Lora', Georgia, serif;
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px rgba(32,31,29,.06);
+  --shadow-md: 0 3px 10px rgba(32,31,29,.09);
+  --band: color-mix(in srgb, var(--color-surface) 60%, var(--color-bg));
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--color-bg); color: var(--color-text);
+  font-family: var(--font-body); font-size: 14px; line-height: 1.55;
+}
+h1, h2, h3, h4, .fig { font-family: var(--font-heading); font-weight: 400; margin: 0; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.tnum { font-feature-settings: 'tnum'; font-variant-numeric: tabular-nums; }
+.muted { color: color-mix(in srgb, var(--color-text) 66%, transparent); }
+.kicker {
+  font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--color-accent); font-weight: 600;
+}
+
+/* nav */
+.nav {
+  display: flex; align-items: center; gap: 26px;
+  padding: 16px 40px; background: var(--band);
+  border-bottom: 1px solid var(--color-divider);
+}
+.nav-brand { display: flex; align-items: center; gap: 11px; font-family: var(--font-heading); font-size: 19px; }
+.nav-brand .sub { color: var(--color-accent); font-size: 13px; }
+.nav a.navlink {
+  text-decoration: none; font-size: 13px; color: color-mix(in srgb, var(--color-text) 72%, transparent);
+  transition: color .18s ease;
+}
+.nav a.navlink:hover { color: var(--color-text); }
+.nav a.navlink[aria-current="page"] { color: var(--color-accent-700); }
+.nav .spacer { flex: 1; }
+
+/* buttons — outlined, never solid-filled */
+.btn {
+  display: inline-block; padding: 8px 16px; border-radius: var(--radius-sm);
+  border: 1px solid var(--color-divider); background: transparent; color: var(--color-text);
+  font-family: var(--font-body); font-size: 13px; text-decoration: none; cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.btn:hover { background: color-mix(in srgb, var(--color-surface) 70%, transparent); }
+.btn-primary { border-color: var(--color-accent); color: var(--color-accent-700); }
+.btn-primary:hover { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.btn-ghost { border-color: transparent; }
+select.btn { appearance: auto; }
+
+/* segmented period control */
+.seg { display: inline-flex; border: 1px solid var(--color-divider); border-radius: var(--radius-sm); overflow: hidden; }
+.seg label { padding: 7px 12px; font-size: 12px; cursor: pointer; border-right: 1px solid var(--color-divider); }
+.seg label:last-child { border-right: none; }
+.seg input { position: absolute; opacity: 0; }
+.seg label:has(input:checked) { background: color-mix(in srgb, var(--color-accent) 10%, transparent); color: var(--color-accent-700); }
+
+/* cards / KPI */
+.card {
+  background: color-mix(in srgb, var(--color-surface) 45%, var(--color-bg));
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+  padding: 16px 18px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.kpi { transition: box-shadow .25s ease, transform .25s ease; }
+.kpi:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.kpi .fig { font-size: 30px; }
+.kpi .meta { font-size: 12px; }
+.delta-up { color: var(--color-accent-700); }
+
+/* table */
+.table { width: 100%; border-collapse: collapse; }
+.table th {
+  background: var(--band); text-align: left; font-weight: 400; font-size: 11px;
+  letter-spacing: .08em; text-transform: uppercase; padding: 8px 12px;
+  color: var(--color-neutral-600); border-bottom: 1px solid var(--color-divider);
+}
+.table td { padding: 10px 12px; border-bottom: 1px solid var(--color-divider); }
+.table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--color-surface) 28%, transparent); }
+.amount { text-align: right; }
+
+/* tags */
+.tag { display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid transparent; }
+.tag-accent { border-color: var(--color-accent); color: var(--color-accent-700); }
+.tag-outline { border-color: var(--color-divider); color: var(--color-neutral-600); }
+.tag-neutral { background: color-mix(in srgb, var(--color-surface) 80%, var(--color-bg)); border-color: var(--color-divider); color: var(--color-neutral-600); }
+
+/* checklist */
+.check { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--color-divider); }
+.check:last-child { border-bottom: none; }
+.check input { accent-color: var(--color-accent); pointer-events: none; }
+.check.done { opacity: .55; }
+.check.done span { text-decoration: line-through; }
+.check a { font-size: 12px; margin-left: auto; color: var(--color-accent-700); }
+
+/* hero plate — photo slot; drop a real restaurant photo here (see PR notes) */
+.plate {
+  border: 1px solid var(--color-divider); border-radius: var(--radius-md);
+  background: var(--color-surface); padding: 8px; box-shadow: var(--shadow-sm);
+  display: flex; align-items: center; justify-content: center; min-height: 200px;
+}
+.plate .inner {
+  width: 100%; height: 100%; min-height: 184px; border-radius: 2px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--color-accent) 14%, var(--color-bg)), var(--color-bg) 70%);
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* charts */
+.spark { stroke-dasharray: 900; stroke-dashoffset: 900; animation: draw 1.4s ease forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+
+/* layout */
+main { max-width: 1220px; margin: 0 auto; padding: 34px 40px 46px; display: flex; flex-direction: column; gap: 26px; }
+.hero { display: grid; grid-template-columns: 1fr 320px; gap: 32px; align-items: stretch; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.mid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 22px; }
+@media (max-width: 900px) {
+  .hero, .kpis, .mid { grid-template-columns: 1fr; }
+  .nav { flex-wrap: wrap; gap: 12px; padding: 14px 18px; }
+  main { padding: 22px 18px 40px; }
+}
+.notice {
+  border: 1px solid var(--color-accent); border-radius: var(--radius-md);
+  padding: 14px 18px; background: color-mix(in srgb, var(--color-accent) 6%, var(--color-bg));
+}
+[hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<h1>📒 Restaurant Bookkeeper in a Box</h1>
-<p class="muted">Restaurant POS data cleanup &amp; QuickBooks sync. Import POS transaction CSVs, strict-validate them, and export reconciled daily sales receipts mapped to QuickBooks clearing accounts.</p>
-<p><a href="/ledger.html"><strong>→ Ledger &amp; Compliance console</strong></a> — standalone double-entry ledger, P&amp;L / Balance Sheet / COGS reports, Colorado tax deadlines, and QuickBooks-optional exports (QBO CSV + IIF).</p>
-<p class="muted"><strong>$149/month.</strong> Imports and exports require an active subscription — if a request returns <code>subscription_required</code>, follow the checkout link in the response (or contact the owner for access).</p>
 
-<section>
-  <h2>1 · Import POS CSV</h2>
-  <p class="muted">Paste the canonical 16-column transaction CSV. Validation is all-or-nothing: any bad row rejects the whole file.</p>
-  <textarea id="csv" placeholder="transaction_id,source_pos,business_date,timestamp,gross_sales,..."></textarea>
-  <p><button id="importBtn">Import CSV</button></p>
-  <div id="importDisclaimer"></div>
-  <pre id="importOut" hidden></pre>
-</section>
+<nav class="nav">
+  <div class="nav-brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="var(--color-accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M17 3.2 30.5 10v14L17 30.8 3.5 24V10z"></path>
+      <path d="M3.5 10 17 16.8 30.5 10"></path>
+      <path d="M17 16.8V30.8"></path>
+      <path d="M11 20.2v4.4M17 22.6v4.4M23 20.2v4.4"></path>
+    </svg>
+    <span>Restaurant Bookkeeper <span class="sub">/ in a box</span></span>
+  </div>
+  <a class="navlink" href="/" aria-current="page">Daybook</a>
+  <a class="navlink" href="/ledger.html">Ledger</a>
+  <a class="navlink" href="/console.html">Imports</a>
+  <div class="spacer"></div>
+  <select id="locationPicker" class="btn" title="Switch location" hidden></select>
+  <div class="seg" role="radiogroup" aria-label="Period">
+    <label><input type="radio" name="period" value="month" checked>Month</label>
+    <label><input type="radio" name="period" value="quarter">Quarter</label>
+    <label><input type="radio" name="period" value="year">Year</label>
+  </div>
+</nav>
 
-<section>
-  <h2>2 · Import status (cadence watchdog)</h2>
-  <p><button id="statusBtn">Check status</button></p>
-  <pre id="statusOut" hidden></pre>
-</section>
+<main>
+  <div id="gate" class="notice" hidden></div>
 
-<section>
-  <h2>3 · Export — one month at a time</h2>
-  <p class="muted">QuickBooks rejects imports larger than about one month, so exports are month-scoped. Pick the month, then export.</p>
-  <p>
-    <label>Month: <input type="month" id="month"></label>
-    <button id="exportQboBtn">QuickBooks sales receipts</button>
-    <button id="exportCsvBtn">Download month CSV</button>
-    <button id="exportAllBtn" title="Full archive backup — not for QuickBooks import">Full archive CSV</button>
-  </p>
-  <div id="exportDisclaimer"></div>
-  <pre id="exportOut" hidden></pre>
-</section>
+  <!-- greeting + plate -->
+  <div class="hero">
+    <div style="display:flex; flex-direction:column; justify-content:center;">
+      <div class="kicker" id="heroDate">&nbsp;</div>
+      <h1 id="heroLine" style="font-size:40px; margin:8px 0;">Loading your daybook…</h1>
+      <p class="muted" id="heroSub" style="max-width:520px; margin:0;">&nbsp;</p>
+      <div style="display:flex; gap:10px; margin-top:18px;">
+        <a href="/console.html" class="btn btn-primary">Open imports</a>
+        <a id="plExport" href="/api/reports/profit-loss" class="btn btn-ghost">P&amp;L (JSON) →</a>
+      </div>
+    </div>
+    <div class="plate">
+      <!-- Photo slot: replace .inner with <img src="…" style="width:100%;height:100%;object-fit:cover;border-radius:2px"> -->
+      <div class="inner">
+        <svg width="72" height="72" viewBox="0 0 34 34" fill="none" stroke="var(--color-accent)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity=".55" aria-hidden="true">
+          <path d="M17 3.2 30.5 10v14L17 30.8 3.5 24V10z"></path>
+          <path d="M3.5 10 17 16.8 30.5 10"></path>
+          <path d="M17 16.8V30.8"></path>
+          <path d="M11 20.2v4.4M17 22.6v4.4M23 20.2v4.4"></path>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPI cards -->
+  <div class="kpis">
+    <div class="card kpi"><div class="kicker">Cash on hand</div><div class="fig tnum" id="kpiCash">—</div><div class="meta muted" id="kpiCashMeta">as of today</div></div>
+    <div class="card kpi"><div class="kicker">Sales · <span id="kpiSalesPeriod">month</span></div><div class="fig tnum" id="kpiSales">—</div><div class="meta muted" id="kpiSalesMeta">net income <span id="kpiNet" class="delta-up tnum"></span></div></div>
+    <div class="card kpi"><div class="kicker">Outstanding bills</div><div class="fig tnum" id="kpiBills">—</div><div class="meta muted" id="kpiBillsMeta">&nbsp;</div></div>
+    <div class="card kpi"><div class="kicker">Prime cost</div><div class="fig tnum" id="kpiPrime">—</div><div class="meta muted" id="kpiPrimeMeta">COGS + labor · 65% line</div></div>
+  </div>
+
+  <!-- chart + checklist -->
+  <div class="mid">
+    <div class="card" style="gap:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline;">
+        <div><div class="kicker">Sales vs. expenses</div><h3 style="font-size:18px;">Last 8 weeks</h3></div>
+        <div class="muted" style="display:flex; gap:14px; font-size:11px;">
+          <span><span style="display:inline-block;width:16px;height:2px;background:var(--color-accent);vertical-align:middle;margin-right:5px;"></span>Sales</span>
+          <span><span style="display:inline-block;width:16px;border-top:1.5px dashed var(--color-neutral-500);vertical-align:middle;margin-right:5px;"></span>Expenses</span>
+        </div>
+      </div>
+      <svg id="chart" viewBox="0 0 620 220" width="100%" height="220" style="overflow:visible;" class="tnum" role="img" aria-label="Sales versus expenses, last 8 weeks"></svg>
+    </div>
+    <div class="card" style="gap:6px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline;">
+        <div class="kicker">Close the books</div><span class="tag tag-neutral" id="checkCount">…</span>
+      </div>
+      <div id="checklist"></div>
+    </div>
+  </div>
+
+  <!-- needs attention -->
+  <div>
+    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+      <h4 style="font-size:18px;">Needs attention</h4>
+      <a href="/console.html" class="btn btn-ghost" style="font-size:12px;">Open imports</a>
+    </div>
+    <table class="table tnum" style="margin-top:10px;">
+      <thead><tr><th>Date</th><th>Item</th><th>Source</th><th>Status</th><th class="amount">Amount</th></tr></thead>
+      <tbody id="feed"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</main>
 
 <script>
-// The API refuses high-stakes actions with 428 + the disclaimer payload until
-// the caller re-submits with the ack header. acks{} remembers per-action consent.
-const acks = {};
+'use strict';
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n < 0 ? '−' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const iso = (d) => d.toISOString().slice(0, 10);
+const today = new Date();
 
-async function callWithAck(action, mount, doFetch) {
-  const res = await doFetch(acks[action] ? { 'x-expoproxy-ack': acks[action] } : {});
-  if (res.status === 428) {
-    const payload = await res.json();
-    const d = payload.disclaimer;
-    const box = document.getElementById(mount);
-    box.innerHTML = '';
-    const div = document.createElement('div');
-    div.className = 'disclaimer';
-    const strong = document.createElement('strong');
-    strong.textContent = d.title;
-    const p = document.createElement('p');
-    p.textContent = d.text;
-    const btn = document.createElement('button');
-    btn.textContent = 'I acknowledge — proceed';
-    btn.onclick = () => {
-      acks[action] = payload.requiredAckValue;
-      box.innerHTML = '';
-      callWithAck(action, mount, doFetch);
+// Fetch wrapper: 402 → paywall notice, 401/409 → onboarding notice, else throw on !ok.
+async function api(path) {
+  const r = await fetch(path);
+  if (r.status === 402) { const j = await r.json(); gate('subscription', j); throw new Error('402'); }
+  if (r.status === 401 || r.status === 409) { const j = await r.json().catch(() => ({})); gate('onboarding', j); throw new Error('auth'); }
+  if (!r.ok) throw new Error(path + ' → ' + r.status);
+  return r.json();
+}
+let gated = false;
+function gate(kind, j) {
+  if (gated) return; gated = true;
+  const g = $('gate'); g.hidden = false;
+  if (kind === 'subscription') {
+    g.innerHTML = '<div class="kicker">Subscription required</div><p style="margin:6px 0 10px;">The daybook reads your ledger, which needs an active subscription — ' +
+      (j.price ? j.price.amount + ' ' + j.price.currency + '/' + j.price.interval : '') + '.</p>' +
+      (j.checkoutUrl ? '<a class="btn btn-primary" href="' + j.checkoutUrl + '">Subscribe</a>' : '<span class="muted">Contact the owner for access.</span>');
+  } else {
+    g.innerHTML = '<div class="kicker">Welcome</div><p style="margin:6px 0 0;">' +
+      ((j && j.message) || 'Sign in, then create your organization to open the daybook.') + '</p>';
+  }
+}
+
+function periodRange(kind) {
+  const y = today.getFullYear(), m = today.getMonth();
+  if (kind === 'year') return [y + '-01-01', iso(today)];
+  if (kind === 'quarter') { const qm = m - (m % 3); return [iso(new Date(Date.UTC(y, qm, 1))), iso(today)]; }
+  return [iso(new Date(Date.UTC(y, m, 1))), iso(today)];
+}
+
+// ── boot: workspace, then all widgets in parallel ──────────────────────────
+(async function boot() {
+  $('heroDate').textContent = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  let me;
+  try { me = await api('/api/org/me'); } catch { heroFallback(); return; }
+  const pick = $('locationPicker');
+  if (me.locations && me.locations.length > 1) {
+    pick.hidden = false;
+    pick.innerHTML = me.locations.map((l) => '<option value="' + l.id + '"' + (l.id === me.activeLocation.id ? ' selected' : '') + '>' + l.name + '</option>').join('');
+    pick.onchange = async () => {
+      await fetch('/api/org/switch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ locationId: Number(pick.value) }) });
+      location.reload();
     };
-    div.append(strong, p, btn);
-    box.append(div);
-    return null;
   }
-  return res;
+  document.querySelectorAll('input[name=period]').forEach((r) => r.addEventListener('change', () => loadPeriod(r.value)));
+  loadPeriod('month');
+  loadHero(me);
+  loadCash(); loadBills(); loadChecklist(); loadFeed(); loadChart();
+})();
+
+function heroFallback() {
+  $('heroLine').textContent = 'Your daybook is waiting.';
+  $('heroSub').textContent = 'Once you’re signed in with an active workspace, this page shows cash, sales, bills, and what’s left to close the books.';
+  $('checkCount').textContent = '—';
+  $('checklist').innerHTML = '<p class="muted" style="margin:8px 0 0;">The six closing steps appear here once your workspace is connected.</p>';
+  $('feed').innerHTML = '<tr><td colspan="5" class="muted">Sign in to see live activity.</td></tr>';
+  drawChart(null, null);
 }
 
-function show(id, text) {
-  const el = document.getElementById(id);
-  el.hidden = false;
-  el.textContent = text;
+async function loadHero(me) {
+  const y = new Date(today.getTime() - 86400000), yd = iso(y);
+  try {
+    const pl = await api('/api/reports/profit-loss?from=' + yd + '&to=' + yd);
+    const locName = me.activeLocation && me.activeLocation.name;
+    if (pl.totals.revenue > 0 || pl.totals.netIncome !== 0) {
+      $('heroLine').innerHTML = 'Yesterday ' + (locName || 'you') + ' netted <span style="color:var(--color-accent-700);" class="tnum">' + fmt(pl.totals.netIncome) + '</span>.';
+      $('heroSub').textContent = 'Sales of ' + fmt(pl.totals.revenue) +
+        (pl.kpis.foodCostPct !== null ? ' · food cost ' + pl.kpis.foodCostPct.toFixed(0) + '%' : '') +
+        (pl.kpis.primeCostStatus === 'healthy' ? ' · prime cost healthy.' : (pl.kpis.primeCostPct !== null ? ' · prime cost ' + pl.kpis.primeCostPct.toFixed(0) + '% — watch the 65% line.' : '.'));
+    } else {
+      $('heroLine').textContent = 'Good day, ' + (locName || 'operator') + '.';
+      $('heroSub').textContent = 'No postings for yesterday yet — import the daily summary and this greeting comes alive.';
+    }
+  } catch { if (!gated) heroFallback(); }
 }
 
-function requireMonth() {
-  const m = document.getElementById('month').value;
-  if (!m) {
-    show('exportOut', 'Pick a month first — QuickBooks exports must be one month at a time.');
-    return null;
+async function loadPeriod(kind) {
+  $('kpiSalesPeriod').textContent = kind;
+  const [from, to] = periodRange(kind);
+  $('plExport').href = '/api/reports/profit-loss?from=' + from + '&to=' + to;
+  try {
+    const pl = await api('/api/reports/profit-loss?from=' + from + '&to=' + to);
+    $('kpiSales').textContent = fmt(pl.totals.revenue);
+    $('kpiNet').textContent = fmt(pl.totals.netIncome);
+    if (pl.kpis.primeCostPct !== null) {
+      $('kpiPrime').textContent = pl.kpis.primeCostPct.toFixed(1) + '%';
+      $('kpiPrimeMeta').textContent = pl.kpis.primeCostStatus === 'healthy' ? 'healthy · under the 65% line' : 'over the 65% line — review COGS & labor';
+    } else { $('kpiPrime').textContent = '—'; }
+  } catch { /* gate shown */ }
+}
+
+async function loadCash() {
+  try {
+    const bs = await api('/api/reports/balance-sheet?as_of=' + iso(today));
+    const cash = bs.assets.filter((a) => a.name === 'Cash - General' || a.name === 'Cash Drawer').reduce((s, a) => s + a.balance, 0);
+    $('kpiCash').textContent = fmt(cash);
+    $('kpiCashMeta').textContent = bs.balanced ? 'books in balance' : 'balance check failed — review ledger';
+  } catch { /* gate shown */ }
+}
+
+async function loadBills() {
+  try {
+    const ap = await api('/api/ap/aging');
+    $('kpiBills').textContent = fmt(ap.total);
+    const all = ap.bins.flatMap((b) => b.invoices);
+    const next = all.filter((i) => !i.pastDue).sort((a, b) => a.dueDate < b.dueDate ? -1 : 1)[0];
+    const overdue = all.filter((i) => i.pastDue).length;
+    $('kpiBillsMeta').textContent = all.length === 0 ? 'nothing outstanding'
+      : all.length + ' invoice' + (all.length > 1 ? 's' : '') +
+        (overdue ? ' · ' + overdue + ' past due' : (next ? ' · next due ' + next.dueDate.slice(5) : ''));
+  } catch { /* gate shown */ }
+}
+
+// Six live signals, each linking to where the work happens.
+async function loadChecklist() {
+  const items = [];
+  const add = (done, label, href) => items.push({ done, label, href });
+  const week = 7 * 86400000, month31 = 31 * 86400000;
+  const settle = (p) => p.catch(() => null);
+  const [imp, bank, ap, comp, inv, bs] = await Promise.all([
+    settle(api('/api/import/status')), settle(api('/api/bank/feed')), settle(api('/api/ap/aging')),
+    settle(api('/api/compliance/events')), settle(api('/api/inventory/count')), settle(api('/api/reports/balance-sheet?as_of=' + iso(today))),
+  ]);
+  add(!!(imp && (imp.validatedThisWeek || (imp.lastImportAt && (today - new Date(imp.lastImportAt)) < week))), 'Import POS sales (this week)', '/console.html');
+  add(!!(bank && bank.unmatched && bank.unmatched.length === 0), 'Clear the bank feed queue', '/console.html');
+  add(!!(ap && ap.bins && !ap.bins.some((b) => b.invoices.some((i) => i.pastDue))), 'No bills past due', '/console.html');
+  add(!!(comp && comp.overdue && comp.overdue.length === 0), 'No tax deadlines overdue', '/ledger.html');
+  add(!!(inv && inv.counts && inv.counts[0] && (today - new Date(inv.counts[0].countDate)) < month31), 'Physical inventory (this month)', '/console.html');
+  add(!!(bs && bs.balanced), 'Books in balance', '/ledger.html');
+  const done = items.filter((i) => i.done).length;
+  $('checkCount').textContent = done + ' of ' + items.length;
+  $('checklist').innerHTML = items.map((i) =>
+    '<div class="check' + (i.done ? ' done' : '') + '"><input type="checkbox" tabindex="-1" ' + (i.done ? 'checked' : '') + ' aria-hidden="true"><span>' + i.label + '</span>' +
+    (i.done ? '' : '<a href="' + i.href + '">go →</a>') + '</div>').join('');
+}
+
+// Unmatched bank lines + past-due bills, newest first.
+async function loadFeed() {
+  const rows = [];
+  const settle = (p) => p.catch(() => null);
+  const [bank, ap] = await Promise.all([settle(api('/api/bank/feed')), settle(api('/api/ap/aging'))]);
+  if (bank && bank.unmatched) for (const u of bank.unmatched) {
+    rows.push({ date: u.txnDate, item: u.description, source: 'Bank feed', tag: '<span class="tag tag-outline">Needs review</span>', amount: u.amount });
   }
-  return m;
+  if (ap && ap.bins) for (const b of ap.bins) for (const i of b.invoices) if (i.pastDue) {
+    rows.push({ date: i.dueDate, item: i.vendor + ' #' + i.invoiceNo, source: 'AP · due ' + i.dueDate.slice(5), tag: '<span class="tag tag-accent">Past due</span>', amount: -i.amount });
+  }
+  rows.sort((a, b) => (a.date < b.date ? 1 : -1));
+  $('feed').innerHTML = rows.length === 0
+    ? '<tr><td colspan="5" class="muted">Nothing needs your attention — the register closed clean.</td></tr>'
+    : rows.slice(0, 8).map((r) =>
+        '<tr><td>' + r.date.slice(5) + '</td><td>' + r.item + '</td><td class="muted">' + r.source + '</td><td>' + r.tag +
+        '</td><td class="amount">' + fmt(r.amount) + '</td></tr>').join('');
 }
 
-document.getElementById('importBtn').onclick = async () => {
-  const res = await callWithAck('manual_import', 'importDisclaimer', (headers) =>
-    fetch('/api/import/csv', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ csv: document.getElementById('csv').value }),
-    }));
-  if (res) show('importOut', JSON.stringify(await res.json(), null, 2));
-};
+// 8 weekly P&L windows → two polylines.
+async function loadChart() {
+  // 8 rolling 7-day windows, oldest first; the newest ends today.
+  const weeks = [];
+  for (let w = 7; w >= 0; w--) {
+    const end = new Date(today.getTime() - w * 7 * 86400000);
+    const start = new Date(end.getTime() - 6 * 86400000);
+    weeks.push([iso(start), iso(end)]);
+  }
+  let results;
+  try {
+    results = await Promise.all(weeks.map(([f, t]) => api('/api/reports/profit-loss?from=' + f + '&to=' + t)));
+  } catch { drawChart(null, null); return; }
+  drawChart(results.map((r) => r.totals.revenue), results.map((r) => r.totals.cogs + r.totals.expenses), weeks);
+}
 
-document.getElementById('statusBtn').onclick = async () => {
-  const res = await fetch('/api/import/status');
-  show('statusOut', JSON.stringify(await res.json(), null, 2));
-};
-
-document.getElementById('exportQboBtn').onclick = async () => {
-  const m = requireMonth();
-  if (!m) return;
-  const res = await callWithAck('data_export', 'exportDisclaimer', (headers) =>
-    fetch('/api/export/quickbooks?month=' + encodeURIComponent(m), { headers }));
-  if (res) show('exportOut', JSON.stringify(await res.json(), null, 2));
-};
-
-document.getElementById('exportCsvBtn').onclick = async () => {
-  const m = requireMonth();
-  if (!m) return;
-  const res = await callWithAck('data_export', 'exportDisclaimer', (headers) =>
-    fetch('/api/export/csv?month=' + encodeURIComponent(m), { headers }));
-  if (res) show('exportOut', await res.text());
-};
-
-document.getElementById('exportAllBtn').onclick = async () => {
-  const res = await callWithAck('data_export', 'exportDisclaimer', (headers) =>
-    fetch('/api/export/csv', { headers }));
-  if (res) show('exportOut', await res.text());
-};
+function drawChart(sales, spend, weeks) {
+  const X = (i) => 40 + i * (570 / 7);
+  const axes =
+    '<line x1="40" y1="10" x2="40" y2="180" stroke="var(--color-divider)"/>' +
+    '<line x1="40" y1="180" x2="610" y2="180" stroke="var(--color-divider)"/>' +
+    '<line x1="40" y1="60" x2="610" y2="60" stroke="var(--color-divider)" stroke-dasharray="2 4"/>' +
+    '<line x1="40" y1="120" x2="610" y2="120" stroke="var(--color-divider)" stroke-dasharray="2 4"/>';
+  if (!sales) {
+    $('chart').innerHTML = axes +
+      '<text x="325" y="100" text-anchor="middle" font-size="12" fill="var(--color-neutral-500)">Weekly sales appear once postings exist.</text>';
+    return;
+  }
+  const max = Math.max(...sales, ...spend, 1);
+  const Y = (v) => 180 - (v / max) * 160;
+  const pts = (arr) => arr.map((v, i) => X(i) + ',' + Y(v).toFixed(1)).join(' ');
+  $('chart').innerHTML = axes +
+    '<polyline class="spark" points="' + pts(sales) + '" fill="none" stroke="var(--color-accent)" stroke-width="2"/>' +
+    '<polyline points="' + pts(spend) + '" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.5" stroke-dasharray="4 4"/>' +
+    '<g font-size="10" fill="var(--color-neutral-600)" text-anchor="middle">' +
+    weeks.map(([f], i) => (i % 2 === 0 ? '<text x="' + X(i) + '" y="196">' + f.slice(5) + '</text>' : '')).join('') + '</g>';
+}
 </script>
 </body>
 </html>
