@@ -18,8 +18,8 @@ canonical product code lives in **`app/`** and is deployed to AppDeploy.
 
 | Layer | What it is |
 |---|---|
-| **`app/`** | **The product (canonical).** React + Vite + Tailwind frontend (`app/src/`) and AppDeploy SDK backend (`app/backend/index.ts`): Daybook, Bank import with check clearing, A/P aging + check register, printable Reports, AI Invoice Scanner, and the in-app bookkeeper Guide. Deployed to AppDeploy. |
-| `api/`, `lib/`, `migrations/`, `public/`, `hatchable.toml` | **Legacy (Hatchable engine).** The earlier multi-tenant Postgres implementation, kept as reference for features not yet ported to `app/` (multi-location workspaces, POS CSV contract, delivery reconciliation, payroll journals, compliance calendar, QuickBooks exports, billing). Not deployed. |
+| **`app/`** | **The product (canonical).** React + Vite + Tailwind frontend (`app/src/`) and AppDeploy SDK backend (`app/backend/index.ts`): multi-location workspaces, Daybook, Bank import with check clearing, A/P aging + check register, delivery reconciliation, payroll journals, printable Reports with the QuickBooks bridge (QBO CSV + IIF), the CO + federal compliance calendar, AI Invoice Scanner, and the in-app bookkeeper Guide. Deployed to AppDeploy. |
+| `api/`, `lib/`, `migrations/`, `public/`, `hatchable.toml` | **Legacy (Hatchable engine).** The earlier multi-tenant Postgres implementation. All of its bookkeeping modules have been ported to `app/`; what remains here as reference only is the POS 16-column CSV contract, the org_user auth model, and Stripe billing. Not deployed. |
 
 ### Legacy engine reference (Hatchable era — superseded by `app/`)
 

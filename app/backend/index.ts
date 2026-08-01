@@ -5,8 +5,51 @@ const POST_DISCLAIMER = 'You are posting to your books. Entries are recorded in 
 
 const cents = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/** Split one CSV line honoring double-quoted fields. */
+function splitCsvLine(line: string): string[] {
+    const out: string[] = [];
+    let cur = '';
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (q) {
+            if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+            else cur += ch;
+        } else if (ch === '"') q = true;
+        else if (ch === ',') { out.push(cur); cur = ''; }
+        else cur += ch;
+    }
+    out.push(cur);
+    return out;
+}
+
+// ── Multi-location workspaces ──
+// Every data row carries locationId; rows written before this feature have
+// none and belong to the default location. One login, isolated books per
+// location, switched from the header picker.
+async function getLocations() {
+    let locs = await listAll('locations');
+    if (locs.length === 0) {
+        await db.add('locations', [{ name: 'Main Location', isDefault: true, createdAt: Date.now() }]);
+        locs = await listAll('locations');
+    }
+    const def = locs.find((l) => l.isDefault) || locs[0];
+    return { locs, defId: String(def.id) };
+}
+
+async function resolveLoc(requested?: string) {
+    const { locs, defId } = await getLocations();
+    const locId = requested && locs.some((l) => String(l.id) === String(requested)) ? String(requested) : defId;
+    return { locId, defId, locs };
+}
+
+const inLoc = (row: Record<string, any>, locId: string, defId: string) => String(row.locationId || defId) === locId;
 
 // ── Chart of accounts (ported from the production 48-account template) ──
+// The COA is shared across locations; balances are computed from each
+// location's own journal entries.
 type Acct = { accountNo: string; name: string; type: string; qbType: string; parentAccountNo: string | null };
 const COA: Array<[string, string, string, string, (string | null)?]> = [
     ['1000', 'Cash - General', 'asset', 'Bank'], ['1010', 'Cash Drawer', 'asset', 'Bank'],
@@ -65,7 +108,7 @@ async function ensureCoa(): Promise<Array<Record<string, any>>> {
 type JLine = { accountName: string; debit: number; credit: number; description?: string };
 type JEntry = { journalNo: string; entryDate: string; description: string; source: string; lines: JLine[] };
 
-async function postEntry(entry: JEntry): Promise<{ ok: boolean; message?: string }> {
+async function postEntry(entry: JEntry, locId: string, defId: string): Promise<{ ok: boolean; message?: string }> {
     const accounts = await ensureCoa();
     const byName = new Map(accounts.map((a) => [String(a.name).toLowerCase(), a]));
     const parents = new Set(accounts.filter((a) => a.parentAccountNo).map((a) => a.parentAccountNo));
@@ -81,15 +124,19 @@ async function postEntry(entry: JEntry): Promise<{ ok: boolean; message?: string
     }
     if (Math.abs(cents(dr) - cents(cr)) > 0.005) return { ok: false, message: 'unbalanced: debits ' + cents(dr).toFixed(2) + ' vs credits ' + cents(cr).toFixed(2) };
     const existing = await db.list('journal_entries', { filter: { journalNo: entry.journalNo } });
-    if (existing.items.length > 0) return { ok: false, message: 'journal ' + entry.journalNo + ' already posted' };
-    const [id] = await db.add('journal_entries', [{ ...entry, createdAt: Date.now() }]);
+    if (existing.items.some((e) => inLoc(e, locId, defId))) return { ok: false, message: 'journal ' + entry.journalNo + ' already posted' };
+    const [id] = await db.add('journal_entries', [{ ...entry, locationId: locId, createdAt: Date.now() }]);
     if (!id) return { ok: false, message: 'failed to save journal entry' };
     return { ok: true };
 }
 
-async function accountBalances(from: string, to: string) {
+async function locEntries(locId: string, defId: string): Promise<Array<Record<string, any>>> {
+    return (await listAll('journal_entries')).filter((e) => inLoc(e, locId, defId));
+}
+
+async function accountBalances(from: string, to: string, locId: string, defId: string) {
     const accounts = await ensureCoa();
-    const entries = await listAll('journal_entries');
+    const entries = await locEntries(locId, defId);
     const sums = new Map<string, { debits: number; credits: number }>();
     for (const e of entries) {
         const d = String(e.entryDate || '');
@@ -162,6 +209,238 @@ function routeCategory(category: string): string {
     return 'Supplies';
 }
 
+// ── Delivery reconciliation (ported from the legacy engine) ──
+// Identity enforced: net_payout = gross − commissions − marketing − refunds.
+// driver_tips are pass-through and never posted.
+const DELIVERY_CSV_HEADER = 'platform,period_start,period_end,gross_sales,commissions,marketing_fees,refunds,driver_tips,net_payout';
+const DELIVERY_NUM_FIELDS = ['grossSales', 'commissions', 'marketingFees', 'refunds', 'driverTips', 'netPayout'] as const;
+
+function parseDeliveryCsv(csv: string) {
+    const errors: Array<{ line: number; message: string }> = [];
+    const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length === 0) return { ok: false as const, errors: [{ line: 0, message: 'empty_file' }] };
+    if (lines[0].trim() !== DELIVERY_CSV_HEADER) {
+        return { ok: false as const, errors: [{ line: 1, message: 'header_mismatch: expected "' + DELIVERY_CSV_HEADER + '"' }] };
+    }
+    const statements: Array<Record<string, any>> = [];
+    const seen = new Set<string>();
+    for (let i = 1; i < lines.length; i++) {
+        const cols = splitCsvLine(lines[i]).map((c) => c.trim());
+        if (cols.length !== 9) { errors.push({ line: i + 1, message: 'column_count_mismatch: expected 9' }); continue; }
+        const s: Record<string, any> = {
+            platform: cols[0], periodStart: cols[1], periodEnd: cols[2],
+            grossSales: Number(cols[3]), commissions: Number(cols[4]), marketingFees: Number(cols[5]),
+            refunds: Number(cols[6]), driverTips: Number(cols[7]), netPayout: Number(cols[8])
+        };
+        if (!s.platform) errors.push({ line: i + 1, message: 'platform required' });
+        if (!DATE_RE.test(s.periodStart)) errors.push({ line: i + 1, message: 'period_start must be YYYY-MM-DD' });
+        if (!DATE_RE.test(s.periodEnd)) errors.push({ line: i + 1, message: 'period_end must be YYYY-MM-DD' });
+        if (DATE_RE.test(s.periodStart) && DATE_RE.test(s.periodEnd) && s.periodEnd < s.periodStart) errors.push({ line: i + 1, message: 'period_end before period_start' });
+        for (const f of DELIVERY_NUM_FIELDS) {
+            if (!Number.isFinite(s[f]) || s[f] < 0) errors.push({ line: i + 1, message: f + ' must be a nonnegative number' });
+        }
+        const key = s.platform + '/' + s.periodStart + '/' + s.periodEnd;
+        if (seen.has(key)) errors.push({ line: i + 1, message: 'duplicate platform/period in file: ' + key });
+        seen.add(key);
+        const expectedNet = cents(s.grossSales - s.commissions - s.marketingFees - s.refunds);
+        if (DELIVERY_NUM_FIELDS.every((f) => Number.isFinite(s[f])) && Math.abs(expectedNet - cents(s.netPayout)) > 0.01) {
+            errors.push({ line: i + 1, message: 'net_payout does not reconcile: gross - commissions - marketing - refunds = ' + expectedNet.toFixed(2) + ' but file says ' + cents(s.netPayout).toFixed(2) });
+        }
+        if (s.grossSales <= 0) errors.push({ line: i + 1, message: 'gross_sales must be positive' });
+        statements.push(s);
+    }
+    if (errors.length > 0) return { ok: false as const, errors };
+    return { ok: true as const, statements };
+}
+
+function buildDeliveryEntry(s: Record<string, any>): JEntry {
+    const desc = s.platform + ' ' + s.periodStart + ' to ' + s.periodEnd;
+    const line = (accountName: string, description: string, debit: number, credit: number): JLine => ({ accountName, description, debit, credit });
+    return {
+        journalNo: 'DL-' + s.platform + '-' + s.periodEnd,
+        entryDate: s.periodEnd,
+        description: 'Delivery payout reconciliation - ' + desc,
+        source: 'delivery_import',
+        lines: [
+            ...(s.netPayout > 0 ? [line('Delivery Payout Clearing', 'Payout in transit - ' + desc, cents(s.netPayout), 0)] : []),
+            ...(s.commissions > 0 ? [line('Delivery Commissions & Fees', 'Platform commission - ' + desc, cents(s.commissions), 0)] : []),
+            ...(s.marketingFees > 0 ? [line('Marketing', 'Platform marketing fees - ' + desc, cents(s.marketingFees), 0)] : []),
+            ...(s.refunds > 0 ? [line('Delivery Sales', 'Customer refunds (contra-revenue) - ' + desc, cents(s.refunds), 0)] : []),
+            line('Delivery Sales', 'Gross marketplace sales - ' + desc, 0, cents(s.grossSales))
+        ]
+    };
+}
+
+// ── Payroll journal import (ported) ──
+// Recording only: payroll is executed by the operator's provider; this
+// records what the provider reports. provider_remits_taxes=true adds a
+// remittance entry so nothing stays owed.
+const PAYROLL_CSV_HEADER = 'pay_date,boh_gross,foh_gross,employer_fed_taxes,employer_futa,employer_sui_co,employer_famli,fed_withholding,co_withholding,employee_famli,net_pay_sweep,provider_remits_taxes';
+const PAYROLL_NUM_FIELDS = ['bohGross', 'fohGross', 'employerFedTaxes', 'employerFuta', 'employerSuiCo', 'employerFamli', 'fedWithholding', 'coWithholding', 'employeeFamli', 'netPaySweep'] as const;
+
+function parsePayrollCsv(csv: string) {
+    const errors: Array<{ line: number; message: string }> = [];
+    const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length === 0) return { ok: false as const, errors: [{ line: 0, message: 'empty_file' }] };
+    if (lines[0].trim() !== PAYROLL_CSV_HEADER) {
+        return { ok: false as const, errors: [{ line: 1, message: 'header_mismatch: expected "' + PAYROLL_CSV_HEADER + '"' }] };
+    }
+    const runs: Array<Record<string, any>> = [];
+    const seen = new Set<string>();
+    for (let i = 1; i < lines.length; i++) {
+        const cols = splitCsvLine(lines[i]).map((c) => c.trim());
+        if (cols.length !== 12) { errors.push({ line: i + 1, message: 'column_count_mismatch: expected 12' }); continue; }
+        const run: Record<string, any> = {
+            payDate: cols[0],
+            bohGross: Number(cols[1]), fohGross: Number(cols[2]),
+            employerFedTaxes: Number(cols[3]), employerFuta: Number(cols[4]), employerSuiCo: Number(cols[5]), employerFamli: Number(cols[6]),
+            fedWithholding: Number(cols[7]), coWithholding: Number(cols[8]), employeeFamli: Number(cols[9]),
+            netPaySweep: Number(cols[10]), providerRemitsTaxes: cols[11].toLowerCase()
+        };
+        if (!DATE_RE.test(run.payDate)) errors.push({ line: i + 1, message: 'pay_date must be YYYY-MM-DD' });
+        if (seen.has(run.payDate)) errors.push({ line: i + 1, message: 'duplicate pay_date in file: ' + run.payDate });
+        seen.add(run.payDate);
+        for (const f of PAYROLL_NUM_FIELDS) {
+            if (!Number.isFinite(run[f]) || run[f] < 0) errors.push({ line: i + 1, message: f + ' must be a nonnegative number' });
+        }
+        if (!['true', 'false'].includes(run.providerRemitsTaxes)) errors.push({ line: i + 1, message: 'provider_remits_taxes must be true or false' });
+        run.providerRemitsTaxes = run.providerRemitsTaxes === 'true';
+        const expectedNet = cents(run.bohGross + run.fohGross - run.fedWithholding - run.coWithholding - run.employeeFamli);
+        if (Number.isFinite(run.netPaySweep) && Math.abs(expectedNet - cents(run.netPaySweep)) > 0.01) {
+            errors.push({ line: i + 1, message: 'net_pay_sweep does not reconcile: gross - employee withholdings = ' + expectedNet.toFixed(2) + ' but file says ' + cents(run.netPaySweep).toFixed(2) });
+        }
+        runs.push(run);
+    }
+    if (errors.length > 0) return { ok: false as const, errors };
+    return { ok: true as const, runs };
+}
+
+function buildPayrollEntries(run: Record<string, any>): JEntry[] {
+    const line = (accountName: string, description: string, debit: number, credit: number): JLine => ({ accountName, description, debit, credit });
+    const employerTaxes = cents(run.employerFedTaxes + run.employerFuta + run.employerSuiCo + run.employerFamli);
+    const fedLiability = cents(run.employerFedTaxes + run.fedWithholding);
+    const famliLiability = cents(run.employerFamli + run.employeeFamli);
+    const liabilities: Array<[string, number]> = ([
+        ['Federal Payroll Taxes Payable', fedLiability],
+        ['FUTA Payable', cents(run.employerFuta)],
+        ['SUI Payable - CO', cents(run.employerSuiCo)],
+        ['FAMLI Premiums Payable', famliLiability],
+        ['CO Income Tax Withholding Payable', cents(run.coWithholding)]
+    ] as Array<[string, number]>).filter(([, amount]) => amount > 0);
+
+    const accrual: JEntry = {
+        journalNo: 'PR-' + run.payDate,
+        entryDate: run.payDate,
+        description: 'Payroll journal - pay date ' + run.payDate,
+        source: 'payroll_import',
+        lines: [
+            ...(run.bohGross > 0 ? [line('Wages - Kitchen (BOH)', 'Gross wages BOH', cents(run.bohGross), 0)] : []),
+            ...(run.fohGross > 0 ? [line('Wages - Service (FOH)', 'Gross wages FOH', cents(run.fohGross), 0)] : []),
+            ...(employerTaxes > 0 ? [line('Payroll Taxes', 'Employer payroll taxes', employerTaxes, 0)] : []),
+            ...liabilities.map(([name, amount]) => line(name, 'Payroll liability accrual', 0, amount)),
+            ...(run.netPaySweep > 0 ? [line('Cash - General', 'Net pay sweep by payroll provider', 0, cents(run.netPaySweep))] : [])
+        ]
+    };
+    const entries = [accrual];
+    const taxTotal = cents(liabilities.reduce((s, [, amount]) => s + amount, 0));
+    if (run.providerRemitsTaxes && taxTotal > 0) {
+        entries.push({
+            journalNo: 'PR-REMIT-' + run.payDate,
+            entryDate: run.payDate,
+            description: 'Payroll taxes remitted by provider - pay date ' + run.payDate,
+            source: 'payroll_import',
+            lines: [
+                ...liabilities.map(([name, amount]) => line(name, 'Remitted by payroll provider', amount, 0)),
+                line('Cash - General', 'Tax sweep by payroll provider', 0, taxTotal)
+            ]
+        });
+    }
+    return entries;
+}
+
+// ── Compliance calendar (ported) ──
+// CO + federal filing deadlines; estimated amounts come live from the
+// location's liability balances as of each period end — no tax rates are
+// hardcoded. Zero-balance overdue periods auto-file. Manual FILED marks are
+// stored as override rows in compliance_events.
+const COMPLIANCE_SCHEDULES = [
+    { taxType: 'CO_SALES_TAX', form: 'DR 0100', cadence: 'monthly', liabilityAccount: 'Sales Tax Payable - CO', due: 'next-month-20' },
+    { taxType: 'CO_PIT', form: 'DR 1094', cadence: 'monthly', liabilityAccount: 'CO Income Tax Withholding Payable', due: 'next-month-15' },
+    { taxType: 'CO_FAMLI', form: 'FAMLI Quarterly Report', cadence: 'quarterly', liabilityAccount: 'FAMLI Premiums Payable', due: 'next-month-end' },
+    { taxType: 'CO_SUI', form: 'UITR-1', cadence: 'quarterly', liabilityAccount: 'SUI Payable - CO', due: 'next-month-end' },
+    { taxType: 'FED_941', form: 'Form 941', cadence: 'quarterly', liabilityAccount: 'Federal Payroll Taxes Payable', due: 'next-month-end' },
+    { taxType: 'FED_940', form: 'Form 940', cadence: 'annual', liabilityAccount: 'FUTA Payable', due: 'jan-31' }
+];
+const ALERT_THRESHOLD_DAYS = 14;
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const isoYmd = (y: number, m: number, d: number) => y + '-' + pad2(m) + '-' + pad2(d);
+const lastDay = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+
+function periodEnds(cadence: string, today: Date): string[] {
+    const lo = new Date(today.getTime() - 92 * 86400000).toISOString().slice(0, 10);
+    const hi = new Date(today.getTime() + 366 * 86400000).toISOString().slice(0, 10);
+    const ends: string[] = [];
+    const y = today.getUTCFullYear();
+    for (let yy = y - 1; yy <= y + 1; yy++) {
+        if (cadence === 'monthly') for (let m = 1; m <= 12; m++) ends.push(isoYmd(yy, m, lastDay(yy, m)));
+        if (cadence === 'quarterly') for (const m of [3, 6, 9, 12]) ends.push(isoYmd(yy, m, lastDay(yy, m)));
+        if (cadence === 'annual') ends.push(isoYmd(yy, 12, 31));
+    }
+    return ends.filter((e) => e >= lo && e <= hi);
+}
+
+function dueDateFor(rule: string, periodEnd: string): string {
+    const [y, m] = periodEnd.split('-').map(Number);
+    const ny = m === 12 ? y + 1 : y;
+    const nm = m === 12 ? 1 : m + 1;
+    if (rule === 'next-month-20') return isoYmd(ny, nm, 20);
+    if (rule === 'next-month-15') return isoYmd(ny, nm, 15);
+    if (rule === 'next-month-end') return isoYmd(ny, nm, lastDay(ny, nm));
+    return isoYmd(y + 1, 1, 31);
+}
+
+// ── QuickBooks exports (ported) — Tier 1 QBO journal CSV, Tier 2 IIF ──
+function csvEsc(v: unknown): string {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function usDate(isoDate: string): string {
+    const [y, m, d] = isoDate.split('-');
+    return m + '/' + d + '/' + y;
+}
+function toQboJournalCsv(entries: Array<Record<string, any>>): string {
+    const lines = ['Journal No.,Journal Date,Account Name,Description,Debits,Credits'];
+    for (const e of entries) {
+        for (const l of (e.lines || []) as JLine[]) {
+            lines.push([
+                csvEsc(e.journalNo), usDate(String(e.entryDate)), csvEsc(l.accountName), csvEsc(l.description || e.description),
+                l.debit > 0 ? Number(l.debit).toFixed(2) : '', l.credit > 0 ? Number(l.credit).toFixed(2) : ''
+            ].join(','));
+        }
+    }
+    return lines.join('\n') + '\n';
+}
+function toIif(entries: Array<Record<string, any>>): string {
+    const out = ['!TRNS\tTRNSTYPE\tDATE\tACCNT\tAMOUNT\tMEMO', '!SPL\tTRNSTYPE\tDATE\tACCNT\tAMOUNT\tMEMO', '!ENDTRNS'];
+    for (const e of entries) {
+        ((e.lines || []) as JLine[]).forEach((l, i) => {
+            const amount = l.debit > 0 ? Number(l.debit) : -Number(l.credit);
+            const memo = String(l.description || e.description || '').replace(/\t/g, ' ');
+            out.push([i === 0 ? 'TRNS' : 'SPL', 'GENERAL', usDate(String(e.entryDate)), String(l.accountName).replace(/\t/g, ' '), amount.toFixed(2), memo].join('\t'));
+        });
+        out.push('ENDTRNS');
+    }
+    return out.join('\n') + '\n';
+}
+
+async function entriesForMonth(month: string, locId: string, defId: string) {
+    const entries = await locEntries(locId, defId);
+    return entries
+        .filter((e) => String(e.entryDate || '').startsWith(month + '-'))
+        .sort((a, b) => (String(a.entryDate) < String(b.entryDate) ? -1 : String(a.entryDate) > String(b.entryDate) ? 1 : String(a.journalNo) < String(b.journalNo) ? -1 : 1));
+}
+
 const SCHEMA = {
     type: 'object',
     properties: {
@@ -178,10 +457,25 @@ const SCHEMA = {
 export const handler = router({
     'GET /api/_healthcheck': [async () => json({ message: 'Success' })],
     'GET /api/disclaimer': [async () => json({ disclaimer: DISCLAIMER, postDisclaimer: POST_DISCLAIMER })],
+    'GET /api/locations': [async () => {
+        const { locs, defId } = await getLocations();
+        return json({ defaultId: defId, locations: locs.map((l) => ({ id: String(l.id), name: l.name, isDefault: String(l.id) === defId })) });
+    }],
+    'POST /api/locations': [async ({ body }) => {
+        const b = (body || {}) as { name?: string };
+        const name = (b.name || '').trim();
+        if (!name) return error('name is required', 400);
+        const { locs } = await getLocations();
+        if (locs.some((l) => String(l.name).toLowerCase() === name.toLowerCase())) return error('a location with that name already exists', 409);
+        const [id] = await db.add('locations', [{ name, isDefault: false, createdAt: Date.now() }]);
+        if (!id) return error('failed to create location', 500);
+        return json({ id: String(id), name });
+    }],
     'POST /api/invoices/scan': [async ({ body }) => {
         const { image: img, mimeType, ack } = (body || {}) as { image?: string; mimeType?: string; ack?: boolean };
         if (ack !== true) return error('disclaimer_acknowledgement_required: ' + DISCLAIMER, 428);
         if (!img || !mimeType) return error('image and mimeType are required', 400);
+        const { locId } = await resolveLoc((body as Record<string, any>)?.location_id);
         try {
             const result = await ai.extract({
                 prompt: 'Extract structured data from this supplier invoice image for restaurant bookkeeping. Rules: NEVER guess an amount you cannot read - use null and add a warning instead. Dates must be YYYY-MM-DD or empty. Choose each line category from: meat, produce, dairy, dry goods, draught beer, packaged beverage, wine, spirits, soda, paper. Add a warning for anything unclear, cut off, or ambiguous.',
@@ -198,7 +492,7 @@ export const handler = router({
                 const acct = routeCategory(l.category || '');
                 breakdown[acct] = cents((breakdown[acct] || 0) + l.qty * l.unit_price);
             }
-            const record = { vendorName: d.vendor_name || '', invoiceNo: d.invoice_no || '', invoiceDate: d.invoice_date || '', dueDate: d.due_date || '', total: typeof d.total === 'number' ? d.total : null, confidence: typeof d.confidence === 'number' ? d.confidence : 0, warningsCount: warnings.length, breakdown, lineTotal: sum, posted: false, createdAt: Date.now() };
+            const record = { vendorName: d.vendor_name || '', invoiceNo: d.invoice_no || '', invoiceDate: d.invoice_date || '', dueDate: d.due_date || '', total: typeof d.total === 'number' ? d.total : null, confidence: typeof d.confidence === 'number' ? d.confidence : 0, warningsCount: warnings.length, breakdown, lineTotal: sum, posted: false, locationId: locId, createdAt: Date.now() };
             const [id] = await db.add('invoices', [record]);
             if (id) {
                 const ext = mimeType === 'image/png' ? 'png' : 'jpg';
@@ -213,8 +507,9 @@ export const handler = router({
             return error('AI extract failed', 500);
         }
     }],
-    'GET /api/invoices': [async () => {
-        const { items } = await db.list('invoices', { limit: 50 });
+    'GET /api/invoices': [async ({ query }) => {
+        const { locId, defId } = await resolveLoc(query.location);
+        const items = (await listAll('invoices')).filter((i) => inLoc(i, locId, defId));
         items.sort((a, b) => ((b.createdAt as number) || 0) - ((a.createdAt as number) || 0));
         return json({ invoices: items.slice(0, 20) });
     }],
@@ -222,8 +517,9 @@ export const handler = router({
         const { id, ack } = (body || {}) as { id?: string; ack?: boolean };
         if (ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         if (!id) return error('id is required', 400);
+        const { locId, defId } = await resolveLoc((body as Record<string, any>)?.location_id);
         const [inv] = await db.get('invoices', [id]);
-        if (!inv) return error('invoice not found', 404);
+        if (!inv || !inLoc(inv, locId, defId)) return error('invoice not found', 404);
         if (inv.posted) return error('invoice already posted', 409);
         const breakdown = (inv.breakdown || {}) as Record<string, number>;
         const amounts = Object.entries(breakdown).filter(([, v]) => v > 0);
@@ -234,16 +530,17 @@ export const handler = router({
             journalNo, entryDate: (typeof inv.invoiceDate === 'string' && DATE_RE.test(inv.invoiceDate)) ? inv.invoiceDate : new Date().toISOString().slice(0, 10),
             description: 'Vendor invoice ' + (inv.vendorName || 'unknown') + (inv.invoiceNo ? ' #' + inv.invoiceNo : ''), source: 'ap_scan',
             lines: [...amounts.map(([accountName, amount]) => ({ accountName, debit: cents(amount), credit: 0 })), { accountName: 'Accounts Payable', debit: 0, credit: total }]
-        });
+        }, locId, defId);
         if (!posted.ok) return error(posted.message || 'posting failed', 422);
         await db.update('invoices', [{ id, record: { ...inv, posted: true, journalNo } }]);
         return json({ posted: true, journalNo, total });
     }],
     'POST /api/ledger/daily-sales': [async ({ body }) => {
-        const b = (body || {}) as { ack?: boolean; business_date?: string; food_sales?: number; beverage_sales?: number; sales_tax?: number; cc_tips?: number; cash_collected?: number; processing_fees?: number };
+        const b = (body || {}) as { ack?: boolean; business_date?: string; food_sales?: number; beverage_sales?: number; sales_tax?: number; cc_tips?: number; cash_collected?: number; processing_fees?: number; location_id?: string };
         if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         const date = b.business_date || '';
         if (!DATE_RE.test(date)) return error('business_date must be YYYY-MM-DD', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
         const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? cents(v) : 0);
         const food = n(b.food_sales), bev = n(b.beverage_sales), tax = n(b.sales_tax), tips = n(b.cc_tips), cash = n(b.cash_collected), fees = n(b.processing_fees);
         const collected = cents(food + bev + tax + tips);
@@ -260,14 +557,15 @@ export const handler = router({
             ...(tax > 0 ? [{ accountName: 'Sales Tax Payable - CO', debit: 0, credit: tax }] : []),
             ...(tips > 0 ? [{ accountName: 'Tips Payable', debit: 0, credit: tips }] : [])
         ];
-        const posted = await postEntry({ journalNo: 'DS-' + date, entryDate: date, description: 'Daily sales summary', source: 'daily_sales', lines });
+        const posted = await postEntry({ journalNo: 'DS-' + date, entryDate: date, description: 'Daily sales summary', source: 'daily_sales', lines }, locId, defId);
         if (!posted.ok) return error(posted.message || 'posting failed', 422);
         return json({ posted: true, journalNo: 'DS-' + date, collected });
     }],
     'GET /api/ledger/accounts': [async ({ query }) => {
         const from = query.from && DATE_RE.test(query.from) ? query.from : '0000-01-01';
         const to = query.to && DATE_RE.test(query.to) ? query.to : '9999-12-31';
-        const rows = await accountBalances(from, to);
+        const { locId, defId } = await resolveLoc(query.location);
+        const rows = await accountBalances(from, to, locId, defId);
         const totalDebits = cents(rows.reduce((s, r) => s + r.debits, 0));
         const totalCredits = cents(rows.reduce((s, r) => s + r.credits, 0));
         return json({ accounts: rows, totals: { debits: totalDebits, credits: totalCredits }, inBalance: Math.abs(totalDebits - totalCredits) < 0.01 });
@@ -275,12 +573,14 @@ export const handler = router({
     'GET /api/reports/profit-loss': [async ({ query }) => {
         const from = query.from && DATE_RE.test(query.from) ? query.from : '0000-01-01';
         const to = query.to && DATE_RE.test(query.to) ? query.to : '9999-12-31';
-        const rows = await accountBalances(from, to);
+        const { locId, defId } = await resolveLoc(query.location);
+        const rows = await accountBalances(from, to, locId, defId);
         return json({ from, to, ...plFrom(rows) });
     }],
     'GET /api/reports/balance-sheet': [async ({ query }) => {
         const asOf = query.as_of && DATE_RE.test(query.as_of) ? query.as_of : new Date().toISOString().slice(0, 10);
-        const rows = await accountBalances('0000-01-01', asOf);
+        const { locId, defId } = await resolveLoc(query.location);
+        const rows = await accountBalances('0000-01-01', asOf, locId, defId);
         const sum = (rs: typeof rows) => cents(rs.reduce((s, r) => s + r.balance, 0));
         const nonzero = (rs: typeof rows) => rs.filter((r) => r.balance !== 0);
         const assets = nonzero(rows.filter((r) => r.type === 'asset'));
@@ -294,10 +594,11 @@ export const handler = router({
         const { csv, ack } = (body || {}) as { csv?: string; ack?: boolean };
         if (ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         if (!csv || typeof csv !== 'string') return error('csv is required', 400);
+        const { locId, defId } = await resolveLoc((body as Record<string, any>)?.location_id);
         const rows = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
         if (rows.length === 0) return error('empty file', 422);
         if (rows[0].trim().toLowerCase() !== 'date,description,amount') return error('header must be exactly: date,description,amount', 422);
-        const existing = await listAll('bank_lines');
+        const existing = (await listAll('bank_lines')).filter((x) => inLoc(x, locId, defId));
         const seen = new Set(existing.map((x) => x.txnDate + '|' + x.description + '|' + x.amount));
         let depositsMatched = 0, checksMatched = 0, queuedForReview = 0, duplicates = 0, badRows = 0;
         for (let i = 1; i < rows.length; i++) {
@@ -315,23 +616,23 @@ export const handler = router({
                 const m = /check\s*#?\s*(\d+)/i.exec(description);
                 if (m) {
                     const reg = await db.list('checks', { filter: { checkNumber: m[1] } });
-                    const ck = reg.items.find((c) => c.status === 'outstanding' || c.status === 'amount_mismatch');
+                    const ck = reg.items.filter((c) => inLoc(c, locId, defId)).find((c) => c.status === 'outstanding' || c.status === 'amount_mismatch');
                     if (ck) {
                         const newStatus = Math.abs(cents(Number(ck.writtenAmount)) - cents(Math.abs(amt))) < 0.005 ? 'cleared' : 'amount_mismatch';
                         await db.update('checks', [{ id: String(ck.id), record: { ...ck, status: newStatus, clearedDate: txnDate, clearedAmount: cents(Math.abs(amt)) } }]);
-                        await db.add('bank_lines', [{ txnDate, description, amount: amt, status: 'check_matched', matchedCheck: String(ck.checkNumber), createdAt: Date.now() }]);
+                        await db.add('bank_lines', [{ txnDate, description, amount: amt, status: 'check_matched', matchedCheck: String(ck.checkNumber), locationId: locId, createdAt: Date.now() }]);
                         checksMatched++;
                         continue;
                     }
                 }
             }
-            const [id] = await db.add('bank_lines', [{ txnDate, description, amount: amt, status: 'review', createdAt: Date.now() }]);
+            const [id] = await db.add('bank_lines', [{ txnDate, description, amount: amt, status: 'review', locationId: locId, createdAt: Date.now() }]);
             if (!id) { badRows++; continue; }
             const clearing = amt > 0 ? routeDeposit(description) : null;
             if (clearing) {
-                const posted = await postEntry({ journalNo: 'BK-' + id, entryDate: txnDate, description: 'Bank deposit match: ' + description, source: 'bank_import', lines: [{ accountName: 'Cash - General', debit: amt, credit: 0 }, { accountName: clearing, debit: 0, credit: amt }] });
+                const posted = await postEntry({ journalNo: 'BK-' + id, entryDate: txnDate, description: 'Bank deposit match: ' + description, source: 'bank_import', lines: [{ accountName: 'Cash - General', debit: amt, credit: 0 }, { accountName: clearing, debit: 0, credit: amt }] }, locId, defId);
                 if (posted.ok) {
-                    await db.update('bank_lines', [{ id, record: { txnDate, description, amount: amt, status: 'matched', matchedAccount: clearing, journalNo: 'BK-' + id, createdAt: Date.now() } }]);
+                    await db.update('bank_lines', [{ id, record: { txnDate, description, amount: amt, status: 'matched', matchedAccount: clearing, journalNo: 'BK-' + id, locationId: locId, createdAt: Date.now() } }]);
                     depositsMatched++;
                     continue;
                 }
@@ -340,8 +641,9 @@ export const handler = router({
         }
         return json({ depositsMatched, checksMatched, queuedForReview, duplicates, badRows });
     }],
-    'GET /api/bank/queue': [async () => {
-        const all = await listAll('bank_lines');
+    'GET /api/bank/queue': [async ({ query }) => {
+        const { locId, defId } = await resolveLoc(query.location);
+        const all = (await listAll('bank_lines')).filter((x) => inLoc(x, locId, defId));
         const queue = all.filter((x) => x.status === 'review').sort((a, b) => (String(a.txnDate) < String(b.txnDate) ? -1 : 1));
         const accounts = await ensureCoa();
         const parents = new Set(accounts.filter((a) => a.parentAccountNo).map((a) => a.parentAccountNo));
@@ -352,15 +654,16 @@ export const handler = router({
         const { id, accountName, ack } = (body || {}) as { id?: string; accountName?: string; ack?: boolean };
         if (ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         if (!id || !accountName) return error('id and accountName are required', 400);
+        const { locId, defId } = await resolveLoc((body as Record<string, any>)?.location_id);
         const [line] = await db.get('bank_lines', [id]);
-        if (!line) return error('bank line not found', 404);
+        if (!line || !inLoc(line, locId, defId)) return error('bank line not found', 404);
         if (line.status !== 'review') return error('line already handled', 409);
         const amt = cents(Math.abs(Number(line.amount)));
         const isDeposit = Number(line.amount) > 0;
         const jl: JLine[] = isDeposit
             ? [{ accountName: 'Cash - General', debit: amt, credit: 0 }, { accountName, debit: 0, credit: amt }]
             : [{ accountName, debit: amt, credit: 0 }, { accountName: 'Cash - General', debit: 0, credit: amt }];
-        const posted = await postEntry({ journalNo: 'BK-' + id, entryDate: String(line.txnDate), description: (isDeposit ? 'Bank deposit: ' : 'Bank expense: ') + line.description, source: 'bank_import', lines: jl });
+        const posted = await postEntry({ journalNo: 'BK-' + id, entryDate: String(line.txnDate), description: (isDeposit ? 'Bank deposit: ' : 'Bank expense: ') + line.description, source: 'bank_import', lines: jl }, locId, defId);
         if (!posted.ok) return error(posted.message || 'posting failed', 422);
         await db.update('bank_lines', [{ id, record: { ...line, status: 'posted', matchedAccount: accountName, journalNo: 'BK-' + id } }]);
         return json({ posted: true, journalNo: 'BK-' + id });
@@ -368,8 +671,9 @@ export const handler = router({
     'POST /api/bank/ignore': [async ({ body }) => {
         const { id } = (body || {}) as { id?: string };
         if (!id) return error('id is required', 400);
+        const { locId, defId } = await resolveLoc((body as Record<string, any>)?.location_id);
         const [line] = await db.get('bank_lines', [id]);
-        if (!line) return error('bank line not found', 404);
+        if (!line || !inLoc(line, locId, defId)) return error('bank line not found', 404);
         if (line.status !== 'review') return error('line already handled', 409);
         await db.update('bank_lines', [{ id, record: { ...line, status: 'ignored' } }]);
         return json({ ignored: true });
@@ -377,7 +681,8 @@ export const handler = router({
     'GET /api/ledger/journal': [async ({ query }) => {
         const from = query.from && DATE_RE.test(query.from) ? query.from : '0000-01-01';
         const to = query.to && DATE_RE.test(query.to) ? query.to : '9999-12-31';
-        const entries = await listAll('journal_entries');
+        const { locId, defId } = await resolveLoc(query.location);
+        const entries = await locEntries(locId, defId);
         const inRange = entries
             .filter((e) => String(e.entryDate) >= from && String(e.entryDate) <= to)
             .sort((a, b) => (String(a.entryDate) < String(b.entryDate) ? -1 : String(a.entryDate) > String(b.entryDate) ? 1 : String(a.journalNo) < String(b.journalNo) ? -1 : 1));
@@ -385,7 +690,8 @@ export const handler = router({
     }],
     'GET /api/ap/aging': [async ({ query }) => {
         const asOf = query.as_of && DATE_RE.test(query.as_of) ? query.as_of : new Date().toISOString().slice(0, 10);
-        const invs = await listAll('invoices');
+        const { locId, defId } = await resolveLoc(query.location);
+        const invs = (await listAll('invoices')).filter((i) => inLoc(i, locId, defId));
         const unpaid = invs.filter((i) => i.posted && !i.paid);
         const BINS = [{ label: '0-15 days', min: 0, max: 15 }, { label: '16-30 days', min: 16, max: 30 }, { label: '31+ days', min: 31, max: Infinity }];
         const bins = BINS.map((b) => ({ label: b.label, invoices: [] as Array<Record<string, any>>, total: 0 }));
@@ -402,12 +708,13 @@ export const handler = router({
         return json({ asOf, bins, total });
     }],
     'POST /api/ap/pay': [async ({ body }) => {
-        const b = (body || {}) as { id?: string; payment_date?: string; check_number?: string; ack?: boolean };
+        const b = (body || {}) as { id?: string; payment_date?: string; check_number?: string; ack?: boolean; location_id?: string };
         if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         if (!b.id) return error('id is required', 400);
         if (!b.payment_date || !DATE_RE.test(b.payment_date)) return error('payment_date must be YYYY-MM-DD', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
         const [inv] = await db.get('invoices', [b.id]);
-        if (!inv) return error('invoice not found', 404);
+        if (!inv || !inLoc(inv, locId, defId)) return error('invoice not found', 404);
         if (!inv.posted) return error('invoice not posted to the books yet', 409);
         if (inv.paid) return error('invoice already paid', 409);
         const amount = cents(typeof inv.total === 'number' ? inv.total : Number(inv.lineTotal) || 0);
@@ -415,41 +722,168 @@ export const handler = router({
         const checkNumber = (b.check_number || '').trim();
         if (checkNumber) {
             const dup = await db.list('checks', { filter: { checkNumber } });
-            if (dup.items.length > 0) return error('check number already registered', 409);
+            if (dup.items.some((c) => inLoc(c, locId, defId))) return error('check number already registered', 409);
         }
         const method = checkNumber ? 'Check #' + checkNumber : 'EFT/ACH';
-        const posted = await postEntry({ journalNo: 'AP-PAY-' + (inv.invoiceNo || b.id), entryDate: b.payment_date, description: 'Payment to ' + (inv.vendorName || 'vendor') + (inv.invoiceNo ? ' for invoice #' + inv.invoiceNo : '') + ' (' + method + ')', source: 'ap_payment', lines: [{ accountName: 'Accounts Payable', debit: amount, credit: 0 }, { accountName: 'Cash - General', debit: 0, credit: amount }] });
+        const posted = await postEntry({ journalNo: 'AP-PAY-' + (inv.invoiceNo || b.id), entryDate: b.payment_date, description: 'Payment to ' + (inv.vendorName || 'vendor') + (inv.invoiceNo ? ' for invoice #' + inv.invoiceNo : '') + ' (' + method + ')', source: 'ap_payment', lines: [{ accountName: 'Accounts Payable', debit: amount, credit: 0 }, { accountName: 'Cash - General', debit: 0, credit: amount }] }, locId, defId);
         if (!posted.ok) return error(posted.message || 'posting failed', 422);
         await db.update('invoices', [{ id: b.id, record: { ...inv, paid: true, paidDate: b.payment_date, paymentCheckNo: checkNumber || null } }]);
-        if (checkNumber) await db.add('checks', [{ checkNumber, checkDate: b.payment_date, payee: inv.vendorName || 'vendor', writtenAmount: amount, memo: inv.invoiceNo ? 'AP invoice ' + inv.invoiceNo : 'AP payment', status: 'outstanding', createdAt: Date.now() }]);
+        if (checkNumber) await db.add('checks', [{ checkNumber, checkDate: b.payment_date, payee: inv.vendorName || 'vendor', writtenAmount: amount, memo: inv.invoiceNo ? 'AP invoice ' + inv.invoiceNo : 'AP payment', status: 'outstanding', locationId: locId, createdAt: Date.now() }]);
         return json({ paid: true, invoiceNo: inv.invoiceNo || '', vendor: inv.vendorName || '', amount, paymentDate: b.payment_date, method });
     }],
     'GET /api/checks/register': [async ({ query }) => {
         const STATUSES = ['outstanding', 'cleared', 'amount_mismatch', 'void'];
         const status = query.status;
         if (status !== undefined && !STATUSES.includes(status)) return error('status must be one of ' + STATUSES.join('|'), 400);
-        const all = await listAll('checks');
+        const { locId, defId } = await resolveLoc(query.location);
+        const all = (await listAll('checks')).filter((c) => inLoc(c, locId, defId));
         const checks = all.filter((c) => !status || c.status === status).map((c) => ({ id: c.id, checkNumber: c.checkNumber, checkDate: c.checkDate, payee: c.payee, writtenAmount: Number(c.writtenAmount), memo: c.memo || '', status: c.status, clearedDate: c.clearedDate || null, clearedAmount: c.clearedAmount == null ? null : Number(c.clearedAmount) })).sort((a, b) => (String(a.checkDate) < String(b.checkDate) ? -1 : 1));
         return json({ checks });
     }],
     'POST /api/checks/register': [async ({ body }) => {
-        const b = (body || {}) as { check_number?: string; status?: string };
+        const b = (body || {}) as { check_number?: string; status?: string; location_id?: string };
         if (!b.check_number || !['void', 'outstanding'].includes(b.status || '')) return error('check_number required; status must be void or outstanding', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
         const found = await db.list('checks', { filter: { checkNumber: b.check_number } });
-        const c = found.items[0];
+        const c = found.items.find((x) => inLoc(x, locId, defId));
         if (!c) return error('check_not_found', 404);
         await db.update('checks', [{ id: String(c.id), record: { ...c, status: b.status } }]);
         return json({ checkNumber: b.check_number, status: b.status });
     }],
+    'POST /api/delivery/import': [async ({ body }) => {
+        const b = (body || {}) as { csv?: string; ack?: boolean; location_id?: string };
+        if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
+        if (!b.csv || typeof b.csv !== 'string') return error('csv is required', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
+        const parsed = parseDeliveryCsv(b.csv);
+        if (!parsed.ok) return error('strict_validation_failed: ' + parsed.errors.map((e) => 'line ' + e.line + ': ' + e.message).join('; '), 422);
+        const existing = (await listAll('delivery_statements')).filter((s) => inLoc(s, locId, defId));
+        const have = new Set(existing.map((s) => s.platform + '/' + s.periodStart + '/' + s.periodEnd));
+        for (const s of parsed.statements) {
+            if (have.has(s.platform + '/' + s.periodStart + '/' + s.periodEnd)) {
+                return error('statement already imported for ' + s.platform + ' ' + s.periodStart + ' to ' + s.periodEnd, 409);
+            }
+        }
+        let entriesPosted = 0;
+        for (const s of parsed.statements) {
+            const posted = await postEntry(buildDeliveryEntry(s), locId, defId);
+            if (!posted.ok) return error(posted.message || 'posting failed for ' + s.platform + ' ' + s.periodEnd, 422);
+            entriesPosted++;
+            await db.add('delivery_statements', [{
+                platform: s.platform, periodStart: s.periodStart, periodEnd: s.periodEnd,
+                grossSales: cents(s.grossSales), commissions: cents(s.commissions), marketingFees: cents(s.marketingFees),
+                refunds: cents(s.refunds), driverTips: cents(s.driverTips), netPayout: cents(s.netPayout),
+                locationId: locId, createdAt: Date.now()
+            }]);
+        }
+        return json({ imported: parsed.statements.length, entriesPosted });
+    }],
+    'GET /api/delivery/statements': [async ({ query }) => {
+        const { locId, defId } = await resolveLoc(query.location);
+        const rows = (await listAll('delivery_statements')).filter((s) => inLoc(s, locId, defId));
+        rows.sort((a, b) => (String(a.periodEnd) < String(b.periodEnd) ? 1 : -1));
+        return json({
+            statements: rows.map((r) => ({
+                platform: r.platform, periodStart: r.periodStart, periodEnd: r.periodEnd,
+                grossSales: Number(r.grossSales), commissions: Number(r.commissions), marketingFees: Number(r.marketingFees),
+                refunds: Number(r.refunds), driverTips: Number(r.driverTips), netPayout: Number(r.netPayout),
+                effectiveRatePct: Number(r.grossSales) > 0 ? cents(((Number(r.commissions) + Number(r.marketingFees)) / Number(r.grossSales)) * 100) : null
+            }))
+        });
+    }],
+    'POST /api/payroll/import': [async ({ body }) => {
+        const b = (body || {}) as { csv?: string; ack?: boolean; location_id?: string };
+        if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
+        if (!b.csv || typeof b.csv !== 'string') return error('csv is required', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
+        const parsed = parsePayrollCsv(b.csv);
+        if (!parsed.ok) return error('strict_validation_failed: ' + parsed.errors.map((e) => 'line ' + e.line + ': ' + e.message).join('; '), 422);
+        const entries = parsed.runs.flatMap(buildPayrollEntries);
+        let entriesPosted = 0, entriesSkipped = 0;
+        for (const e of entries) {
+            const posted = await postEntry(e, locId, defId);
+            if (posted.ok) entriesPosted++;
+            else if ((posted.message || '').includes('already posted')) entriesSkipped++;
+            else return error(posted.message || 'posting failed for ' + e.journalNo, 422);
+        }
+        return json({ runs: parsed.runs.length, entriesPosted, entriesSkipped });
+    }],
+    'GET /api/compliance/events': [async ({ query }) => {
+        const { locId, defId } = await resolveLoc(query.location);
+        const includeFiled = query.include_filed === 'true';
+        const today = new Date();
+        const todayIso = today.toISOString().slice(0, 10);
+        const entries = await locEntries(locId, defId);
+        const liabBalance = (name: string, asOf: string) => cents(entries
+            .filter((e) => String(e.entryDate) <= asOf)
+            .reduce((s, e) => s + ((e.lines || []) as JLine[])
+                .filter((l) => l.accountName === name)
+                .reduce((ss, l) => ss + (Number(l.credit) || 0) - (Number(l.debit) || 0), 0), 0));
+        const overrides = (await listAll('compliance_events')).filter((o) => inLoc(o, locId, defId));
+        const filedSet = new Set(overrides.filter((o) => o.status === 'FILED').map((o) => o.taxType + '|' + o.periodEnd));
+        const events: Array<Record<string, any>> = [];
+        for (const s of COMPLIANCE_SCHEDULES) {
+            for (const periodEnd of periodEnds(s.cadence, today)) {
+                const due = dueDateFor(s.due, periodEnd);
+                const amount = liabBalance(s.liabilityAccount, periodEnd);
+                const daysRemaining = Math.floor((Date.parse(due) - Date.parse(todayIso)) / 86400000);
+                let status = 'UPCOMING';
+                if (filedSet.has(s.taxType + '|' + periodEnd)) status = 'FILED';
+                else if (daysRemaining < 0) status = amount === 0 ? 'FILED' : 'OVERDUE';
+                else if (daysRemaining <= ALERT_THRESHOLD_DAYS) status = 'DUE_SOON';
+                events.push({ taxType: s.taxType, form: s.form, periodEnd, dueDate: due, estimatedAmount: amount, status, daysRemaining, liabilityAccount: s.liabilityAccount });
+            }
+        }
+        events.sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : a.taxType < b.taxType ? -1 : 1));
+        const visible = events.filter((ev) => (includeFiled || ev.status !== 'FILED') && (ev.status === 'OVERDUE' || ev.daysRemaining <= 120));
+        return json({ asOf: todayIso, overdue: visible.filter((e) => e.status === 'OVERDUE'), events: visible });
+    }],
+    'POST /api/compliance/update': [async ({ body }) => {
+        const b = (body || {}) as { tax_type?: string; period_end?: string; status?: string; location_id?: string };
+        const status = b.status || 'FILED';
+        if (!b.tax_type || !COMPLIANCE_SCHEDULES.some((s) => s.taxType === b.tax_type)) return error('tax_type must be one of ' + COMPLIANCE_SCHEDULES.map((s) => s.taxType).join('|'), 400);
+        if (!b.period_end || !DATE_RE.test(b.period_end)) return error('period_end must be YYYY-MM-DD', 400);
+        if (!['FILED', 'UPCOMING'].includes(status)) return error('status must be FILED or UPCOMING', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
+        const overrides = (await listAll('compliance_events')).filter((o) => inLoc(o, locId, defId) && o.taxType === b.tax_type && o.periodEnd === b.period_end);
+        if (status === 'FILED') {
+            if (overrides.length === 0) await db.add('compliance_events', [{ taxType: b.tax_type, periodEnd: b.period_end, status: 'FILED', locationId: locId, createdAt: Date.now() }]);
+            else await db.update('compliance_events', [{ id: String(overrides[0].id), record: { ...overrides[0], status: 'FILED' } }]);
+        } else {
+            for (const o of overrides) await db.update('compliance_events', [{ id: String(o.id), record: { ...o, status: 'UPCOMING' } }]);
+        }
+        return json({ taxType: b.tax_type, periodEnd: b.period_end, status });
+    }],
+    'GET /api/export/qbo-journal': [async ({ query }) => {
+        if (query.ack !== 'true') return error('disclaimer_acknowledgement_required: You are exporting business records assembled by an autonomous pipeline. Verify totals before accounting use.', 428);
+        const month = query.month;
+        if (typeof month !== 'string' || !MONTH_RE.test(month)) return error('QuickBooks exports are one month at a time. Pass ?month=YYYY-MM.', 400);
+        const { locId, defId } = await resolveLoc(query.location);
+        const entries = await entriesForMonth(month, locId, defId);
+        if (entries.length === 0) return error('no ledger entries for ' + month, 404);
+        const lineCount = entries.reduce((n, e) => n + ((e.lines || []) as JLine[]).length, 0);
+        if (lineCount > 1000) return error('QBO journal imports cap at 1,000 lines (this month has ' + lineCount + '); split the month or export IIF.', 422);
+        return json({ filename: 'qbo-journal-' + month + '.csv', mimeType: 'text/csv', lines: lineCount, content: toQboJournalCsv(entries) });
+    }],
+    'GET /api/export/iif': [async ({ query }) => {
+        if (query.ack !== 'true') return error('disclaimer_acknowledgement_required: You are exporting business records assembled by an autonomous pipeline. Verify totals before accounting use.', 428);
+        const month = query.month;
+        if (typeof month !== 'string' || !MONTH_RE.test(month)) return error('QuickBooks exports are one month at a time. Pass ?month=YYYY-MM.', 400);
+        const { locId, defId } = await resolveLoc(query.location);
+        const entries = await entriesForMonth(month, locId, defId);
+        if (entries.length === 0) return error('no ledger entries for ' + month, 404);
+        return json({ filename: 'journal-' + month + '.iif', mimeType: 'text/plain', content: toIif(entries) });
+    }],
     'GET /api/daybook': [async ({ query }) => {
         const from = query.from && DATE_RE.test(query.from) ? query.from : '0000-01-01';
         const to = query.to && DATE_RE.test(query.to) ? query.to : '9999-12-31';
-        const rows = await accountBalances('0000-01-01', to);
-        const period = await accountBalances(from, to);
+        const { locId, defId } = await resolveLoc(query.location);
+        const rows = await accountBalances('0000-01-01', to, locId, defId);
+        const period = await accountBalances(from, to, locId, defId);
         const pl = plFrom(period);
         const cash = cents(rows.filter((r) => r.name === 'Cash - General' || r.name === 'Cash Drawer').reduce((s, r) => s + r.balance, 0));
         const ap = rows.find((r) => r.name === 'Accounts Payable');
-        const { items: invs } = await db.list('invoices', { limit: 50 });
+        const invs = (await listAll('invoices')).filter((i) => inLoc(i, locId, defId));
         return json({ from, to, cash, apBalance: ap ? ap.balance : 0, totals: pl.totals, kpis: pl.kpis, scans: invs.length, unposted: invs.filter((i) => !i.posted).length });
     }]
 });

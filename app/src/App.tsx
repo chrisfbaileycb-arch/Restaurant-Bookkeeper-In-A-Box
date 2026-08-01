@@ -20,6 +20,22 @@ const Crate = ({ size }: { size: number }) => (
 const btnOn = 'inline-flex items-center gap-2 border border-[#b68235] text-[#8a5f22] rounded px-4 py-2 text-sm cursor-pointer hover:bg-[#b68235]/10';
 const btnOff = 'inline-flex items-center gap-2 border border-[#e0ddd8] text-[#9a968e] rounded px-4 py-2 text-sm cursor-not-allowed';
 
+// Active location: chosen in the header picker, persisted locally; every
+// request carries it so the backend scopes data to that location's books.
+const activeLoc = localStorage.getItem('rb_location') || '';
+const lq = (path: string) => path + (path.includes('?') ? '&' : '?') + 'location=' + encodeURIComponent(activeLoc);
+const lapi = {
+    get: (path: string) => api.get(lq(path)),
+    post: (path: string, body: Record<string, any>) => api.post(path, activeLoc ? { ...body, location_id: activeLoc } : body)
+};
+
+function download(filename: string, content: string, type: string) {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+}
+
 function Home({ go, scanCount }: { go: (v: string) => void; scanCount: number }) {
     return (
         <main className='max-w-3xl mx-auto px-6 py-10 flex flex-col gap-8'>
@@ -43,8 +59,8 @@ function Home({ go, scanCount }: { go: (v: string) => void; scanCount: number })
             <section className='border border-[#e0ddd8] rounded p-5 bg-white/40 flex items-start gap-3'>
                 <Sparkles size={18} className='text-[#b68235] mt-0.5' />
                 <div>
-                    <div className='text-[11px] tracking-widest uppercase font-semibold text-[#8a5f22]'>Coming next</div>
-                    <p className='text-sm mt-1 opacity-80'>New: A/P aging, the check register, and the in-app Guide are live. Delivery reconciliation and payroll journals are next — with a human approval on every posting.</p>
+                    <div className='text-[11px] tracking-widest uppercase font-semibold text-[#8a5f22]'>The whole box</div>
+                    <p className='text-sm mt-1 opacity-80'>Every module is live: bank matching with check clearing, A/P &amp; the check register, delivery reconciliation, payroll journals, printable reports with the QuickBooks bridge, and the Colorado + federal compliance calendar. Run more than one restaurant? Switch or add locations from the picker in the header — each keeps its own isolated books.</p>
                 </div>
             </section>
         </main>
@@ -63,8 +79,8 @@ function Daybook() {
     const [busy, setBusy] = useState(false);
 
     function refresh() {
-        api.get('/api/daybook?from=' + monthStart + '&to=' + iso(today)).then((r) => setData(r.data)).catch(() => {});
-        api.get('/api/reports/profit-loss?from=' + monthStart + '&to=' + iso(today)).then((r) => setPl(r.data)).catch(() => {});
+        lapi.get('/api/daybook?from=' + monthStart + '&to=' + iso(today)).then((r) => setData(r.data)).catch(() => {});
+        lapi.get('/api/reports/profit-loss?from=' + monthStart + '&to=' + iso(today)).then((r) => setPl(r.data)).catch(() => {});
     }
     useEffect(refresh, []);
 
@@ -73,7 +89,7 @@ function Daybook() {
         setBusy(true); setMsg(''); setErr('');
         try {
             const num = (s: string) => (s.trim() === '' ? 0 : Number(s));
-            const r = await api.post('/api/ledger/daily-sales', { ack: true, business_date: form.business_date, food_sales: num(form.food_sales), beverage_sales: num(form.beverage_sales), sales_tax: num(form.sales_tax), cc_tips: num(form.cc_tips), cash_collected: num(form.cash_collected), processing_fees: num(form.processing_fees) });
+            const r = await lapi.post('/api/ledger/daily-sales', { ack: true, business_date: form.business_date, food_sales: num(form.food_sales), beverage_sales: num(form.beverage_sales), sales_tax: num(form.sales_tax), cc_tips: num(form.cc_tips), cash_collected: num(form.cash_collected), processing_fees: num(form.processing_fees) });
             setMsg('Posted ' + r.data.journalNo + ' — ' + money(r.data.collected) + ' collected.');
             refresh();
         } catch (e) { setErr((e as { message?: string }).message || 'Posting failed'); }
@@ -142,14 +158,14 @@ function Bank() {
     const [accounts, setAccounts] = useState<Array<Record<string, any>>>([]);
     const [picks, setPicks] = useState<Record<string, string>>({});
 
-    function refresh() { api.get('/api/bank/queue').then((r) => { setQueue(r.data.queue || []); setAccounts(r.data.accounts || []); }).catch(() => {}); }
+    function refresh() { lapi.get('/api/bank/queue').then((r) => { setQueue(r.data.queue || []); setAccounts(r.data.accounts || []); }).catch(() => {}); }
     useEffect(refresh, []);
 
     async function importCsv() {
         if (!ack || busy || !csv.trim()) return;
         setBusy(true); setErr(''); setSum(null);
         try {
-            const r = await api.post('/api/bank/import', { ack: true, csv });
+            const r = await lapi.post('/api/bank/import', { ack: true, csv });
             setSum(r.data); setCsv('');
             refresh();
         } catch (e) { setErr((e as { message?: string }).message || 'Import failed'); }
@@ -159,11 +175,11 @@ function Bank() {
         const accountName = picks[id];
         if (!accountName) { setErr('Pick an account for that line first.'); return; }
         setErr('');
-        try { await api.post('/api/bank/categorize', { ack: true, id, accountName }); refresh(); }
+        try { await lapi.post('/api/bank/categorize', { ack: true, id, accountName }); refresh(); }
         catch (e) { setErr((e as { message?: string }).message || 'Posting failed'); }
     }
     async function ignoreLine(id: string) {
-        try { await api.post('/api/bank/ignore', { id }); refresh(); }
+        try { await lapi.post('/api/bank/ignore', { id }); refresh(); }
         catch (e) { setErr((e as { message?: string }).message || 'Ignore failed'); }
     }
 
@@ -171,7 +187,7 @@ function Bank() {
         <main className='max-w-3xl mx-auto px-6 py-8 flex flex-col gap-6'>
             <section className='border border-[#b68235] rounded p-4 bg-[#b68235]/5'>
                 <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>Import bank activity</div>
-                <p className='text-sm'>Download a CSV from your bank, arrange it to exactly three columns — <span className='tabular-nums'>date,description,amount</span> (dates YYYY-MM-DD; deposits positive, spending negative) — and paste it here. Card settlements, delivery payouts, and cash deposits auto-match to clearing; everything else waits below for you to categorize. Re-imports skip duplicates.</p>
+                <p className='text-sm'>Download a CSV from your bank, arrange it to exactly three columns — <span className='tabular-nums'>date,description,amount</span> (dates YYYY-MM-DD; deposits positive, spending negative) — and paste it here. Card settlements, delivery payouts, and cash deposits auto-match to clearing; a withdrawal like CHECK #1041 clears a matching outstanding check; everything else waits below for you to categorize. Re-imports skip duplicates.</p>
                 <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'date,description,amount\n2026-08-01,SYSCO DENVER PAYMENT,-1240.55\n2026-08-01,SQUARE INC DES:250801,1897.22'} className='w-full mt-3 border border-[#e0ddd8] rounded p-2 text-xs font-mono bg-white min-h-[120px]' />
                 <label className='flex items-center gap-2 mt-2 text-sm cursor-pointer'>
                     <input type='checkbox' checked={ack} onChange={(e) => setAck(e.target.checked)} className='accent-[#b68235]' />
@@ -209,6 +225,186 @@ function Bank() {
     );
 }
 
+// ── Delivery reconciliation ──
+function Delivery() {
+    const [csv, setCsv] = useState('');
+    const [ack, setAck] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState('');
+    const [err, setErr] = useState('');
+    const [stmts, setStmts] = useState<Array<Record<string, any>>>([]);
+
+    function refresh() { lapi.get('/api/delivery/statements').then((r) => setStmts(r.data.statements || [])).catch(() => {}); }
+    useEffect(refresh, []);
+
+    async function importCsv() {
+        if (!ack || busy || !csv.trim()) return;
+        setBusy(true); setErr(''); setMsg('');
+        try {
+            const r = await lapi.post('/api/delivery/import', { ack: true, csv });
+            setMsg(r.data.imported + ' statement' + (r.data.imported === 1 ? '' : 's') + ' reconciled and posted to the ledger.');
+            setCsv(''); refresh();
+        } catch (e) { setErr((e as { message?: string }).message || 'Import failed'); }
+        finally { setBusy(false); }
+    }
+
+    return (
+        <main className='max-w-4xl mx-auto px-6 py-8 flex flex-col gap-6'>
+            <section className='border border-[#b68235] rounded p-4 bg-[#b68235]/5'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>Import delivery payout statements</div>
+                <p className='text-sm'>One row per platform payout period, exactly as the platform reports it: <span className='tabular-nums'>platform,period_start,period_end,gross_sales,commissions,marketing_fees,refunds,driver_tips,net_payout</span>. The reconciliation identity is enforced — net payout must equal gross − commissions − marketing − refunds, or the file is rejected. Driver tips are pass-through and recorded for reference only. Each statement posts one journal entry; bank matching later clears the payout from clearing into cash.</p>
+                <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'platform,period_start,period_end,gross_sales,commissions,marketing_fees,refunds,driver_tips,net_payout\nDoorDash,2026-07-21,2026-07-27,2140.50,428.10,64.22,35.00,180.00,1613.18'} className='w-full mt-3 border border-[#e0ddd8] rounded p-2 text-xs font-mono bg-white min-h-[110px]' />
+                <label className='flex items-center gap-2 mt-2 text-sm cursor-pointer'>
+                    <input type='checkbox' checked={ack} onChange={(e) => setAck(e.target.checked)} className='accent-[#b68235]' />
+                    These figures match the platform&apos;s own statement
+                </label>
+                <div className='flex items-center gap-3 mt-3 flex-wrap'>
+                    <button onClick={importCsv} disabled={!ack || busy || !csv.trim()} className={ack && !busy && csv.trim() ? btnOn : btnOff}>{busy ? 'Importing…' : 'Reconcile + post'}</button>
+                    {msg && <span className='text-sm text-[#8a5f22] inline-flex items-center gap-1'><Check size={15} />{msg}</span>}
+                    {err && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{err}</span>}
+                </div>
+            </section>
+            <section>
+                <h2 className='text-lg mb-2'>Imported statements <span className='text-sm opacity-60'>· newest first</span></h2>
+                {stmts.length === 0 ? <p className='text-sm opacity-60'>No statements yet — DoorDash, Uber Eats, and Grubhub payout periods land here once imported.</p> : (
+                    <div className='overflow-x-auto border border-[#e0ddd8] rounded bg-white/60'>
+                        <table className='text-sm w-full min-w-[720px]'>
+                            <thead><tr className='text-left text-[11px] uppercase tracking-wide opacity-60'><th className='px-3 py-2'>Platform</th><th>Period</th><th className='text-right'>Gross</th><th className='text-right'>Commissions</th><th className='text-right'>Marketing</th><th className='text-right'>Refunds</th><th className='text-right'>Driver tips</th><th className='text-right pr-3'>Net payout</th><th className='text-right pr-3'>Eff. rate</th></tr></thead>
+                            <tbody>
+                                {stmts.map((s, i) => (
+                                    <tr key={i} className='border-t border-[#e0ddd8]'>
+                                        <td className='px-3 py-2'>{s.platform}</td>
+                                        <td className='tabular-nums opacity-70'>{s.periodStart} → {s.periodEnd}</td>
+                                        <td className='tabular-nums text-right'>{money(s.grossSales)}</td>
+                                        <td className='tabular-nums text-right'>{money(s.commissions)}</td>
+                                        <td className='tabular-nums text-right'>{money(s.marketingFees)}</td>
+                                        <td className='tabular-nums text-right'>{money(s.refunds)}</td>
+                                        <td className='tabular-nums text-right opacity-70'>{money(s.driverTips)}</td>
+                                        <td className='tabular-nums text-right pr-3 text-[#8a5f22]'>{money(s.netPayout)}</td>
+                                        <td className='tabular-nums text-right pr-3'>{s.effectiveRatePct == null ? '—' : s.effectiveRatePct.toFixed(1) + '%'}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </section>
+        </main>
+    );
+}
+
+// ── Payroll journal import ──
+function Payroll() {
+    const [csv, setCsv] = useState('');
+    const [ack, setAck] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState('');
+    const [err, setErr] = useState('');
+
+    async function importCsv() {
+        if (!ack || busy || !csv.trim()) return;
+        setBusy(true); setErr(''); setMsg('');
+        try {
+            const r = await lapi.post('/api/payroll/import', { ack: true, csv });
+            setMsg(r.data.runs + ' pay run' + (r.data.runs === 1 ? '' : 's') + ': ' + r.data.entriesPosted + ' journal entr' + (r.data.entriesPosted === 1 ? 'y' : 'ies') + ' posted' + (r.data.entriesSkipped ? ', ' + r.data.entriesSkipped + ' already on the books (skipped)' : '') + '.');
+            setCsv('');
+        } catch (e) { setErr((e as { message?: string }).message || 'Import failed'); }
+        finally { setBusy(false); }
+    }
+
+    return (
+        <main className='max-w-3xl mx-auto px-6 py-8 flex flex-col gap-6'>
+            <section className='border border-[#b68235] rounded p-4 bg-[#b68235]/5'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>Import payroll journal</div>
+                <p className='text-sm'>Recording only: payroll is executed by your provider (Gusto, ADP, Paychex) — this books what the provider reports. One row per pay run: <span className='tabular-nums break-all'>pay_date,boh_gross,foh_gross,employer_fed_taxes,employer_futa,employer_sui_co,employer_famli,fed_withholding,co_withholding,employee_famli,net_pay_sweep,provider_remits_taxes</span>. Net pay must reconcile to gross minus employee withholdings. With <span className='tabular-nums'>provider_remits_taxes=true</span> a second entry sweeps the tax liabilities (full-service providers remit for you); with <span className='tabular-nums'>false</span> the liabilities stay on the books and feed the compliance calendar.</p>
+                <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'pay_date,boh_gross,foh_gross,employer_fed_taxes,employer_futa,employer_sui_co,employer_famli,fed_withholding,co_withholding,employee_famli,net_pay_sweep,provider_remits_taxes\n2026-07-31,8200.00,6400.00,1116.90,87.60,248.20,65.70,1752.00,642.00,65.70,12140.30,true'} className='w-full mt-3 border border-[#e0ddd8] rounded p-2 text-xs font-mono bg-white min-h-[110px]' />
+                <label className='flex items-center gap-2 mt-2 text-sm cursor-pointer'>
+                    <input type='checkbox' checked={ack} onChange={(e) => setAck(e.target.checked)} className='accent-[#b68235]' />
+                    These figures match my provider&apos;s pay-run summary
+                </label>
+                <div className='flex items-center gap-3 mt-3 flex-wrap'>
+                    <button onClick={importCsv} disabled={!ack || busy || !csv.trim()} className={ack && !busy && csv.trim() ? btnOn : btnOff}><Send size={15} />{busy ? 'Posting…' : 'Post payroll journal'}</button>
+                    {msg && <span className='text-sm text-[#8a5f22] inline-flex items-center gap-1'><Check size={15} />{msg}</span>}
+                    {err && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{err}</span>}
+                </div>
+            </section>
+            <section className='border border-[#e0ddd8] rounded bg-white/40 p-4 text-sm opacity-80'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>What gets posted</div>
+                <p>Each run books wages to Kitchen (BOH) and Service (FOH), employer taxes to Payroll Taxes, and credits the payable accounts — Federal Payroll Taxes, FUTA, SUI (CO), FAMLI, CO Withholding — plus the net-pay cash sweep. Labor lands in prime cost on the Daybook and Reports immediately; open the General Journal on the Reports tab to see every line.</p>
+            </section>
+        </main>
+    );
+}
+
+// ── Compliance calendar ──
+const STATUS_STYLE: Record<string, string> = {
+    OVERDUE: 'border-red-700 text-red-700',
+    DUE_SOON: 'border-[#b68235] text-[#8a5f22]',
+    UPCOMING: 'border-[#e0ddd8] text-[#767268]',
+    FILED: 'border-[#e0ddd8] opacity-50'
+};
+
+function Compliance() {
+    const [data, setData] = useState<Record<string, any> | null>(null);
+    const [showFiled, setShowFiled] = useState(false);
+    const [err, setErr] = useState('');
+
+    function refresh(inclFiled: boolean) {
+        lapi.get('/api/compliance/events' + (inclFiled ? '?include_filed=true' : '')).then((r) => setData(r.data)).catch(() => {});
+    }
+    useEffect(() => { refresh(showFiled); }, [showFiled]);
+
+    async function setStatus(ev: Record<string, any>, status: string) {
+        setErr('');
+        try { await lapi.post('/api/compliance/update', { tax_type: ev.taxType, period_end: ev.periodEnd, status }); refresh(showFiled); }
+        catch (e) { setErr((e as { message?: string }).message || 'Update failed'); }
+    }
+
+    const events: Array<Record<string, any>> = data ? data.events : [];
+    const overdue = data ? (data.overdue || []).length : 0;
+    return (
+        <main className='max-w-4xl mx-auto px-6 py-8 flex flex-col gap-6'>
+            <div className='flex items-baseline justify-between flex-wrap gap-2'>
+                <div>
+                    <h2 className='text-xl'>Compliance calendar</h2>
+                    <p className='text-sm opacity-70 mt-1'>Colorado + federal filing deadlines. Estimated amounts come live from this location&apos;s liability balances as of each period end — no tax rates are hardcoded. Zero-balance overdue periods file themselves. This calendar tracks and reminds; it never files anything for you.</p>
+                </div>
+                <label className='text-xs flex items-center gap-2 cursor-pointer shrink-0'>
+                    <input type='checkbox' checked={showFiled} onChange={(e) => setShowFiled(e.target.checked)} className='accent-[#b68235]' />
+                    Show filed
+                </label>
+            </div>
+            {overdue > 0 && <div className='border border-red-700 rounded p-3 bg-red-700/5 text-sm text-red-700'>{overdue} filing{overdue === 1 ? '' : 's'} overdue with a balance on the books — handle these first.</div>}
+            {err && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{err}</span>}
+            {!data ? <p className='text-sm opacity-60'>Loading deadlines…</p> : events.length === 0 ? <p className='text-sm opacity-60'>Nothing due in the next 120 days.</p> : (
+                <div className='overflow-x-auto border border-[#e0ddd8] rounded bg-white/60'>
+                    <table className='text-sm w-full min-w-[680px]'>
+                        <thead><tr className='text-left text-[11px] uppercase tracking-wide opacity-60'><th className='px-3 py-2'>Form</th><th>Filing</th><th>Period end</th><th>Due</th><th className='text-right'>Est. amount</th><th>Days</th><th>Status</th><th></th></tr></thead>
+                        <tbody>
+                            {events.map((ev) => (
+                                <tr key={ev.taxType + ev.periodEnd} className='border-t border-[#e0ddd8]'>
+                                    <td className='px-3 py-2'>{ev.form}</td>
+                                    <td className='opacity-70'>{ev.taxType.replace(/_/g, ' ')}</td>
+                                    <td className='tabular-nums'>{ev.periodEnd}</td>
+                                    <td className='tabular-nums'>{ev.dueDate}</td>
+                                    <td className='tabular-nums text-right'>{money(ev.estimatedAmount)}</td>
+                                    <td className='tabular-nums'>{ev.daysRemaining < 0 ? Math.abs(ev.daysRemaining) + 'd late' : ev.daysRemaining + 'd'}</td>
+                                    <td><span className={'text-[11px] border rounded-full px-2 ' + (STATUS_STYLE[ev.status] || STATUS_STYLE.UPCOMING)}>{ev.status.replace('_', ' ')}</span></td>
+                                    <td className='pr-3 text-right'>
+                                        {ev.status !== 'FILED'
+                                            ? <button onClick={() => setStatus(ev, 'FILED')} className={btnOn + ' !px-3 !py-1'}>Mark filed</button>
+                                            : <button onClick={() => setStatus(ev, 'UPCOMING')} className={btnOff + ' !px-3 !py-1 !cursor-pointer hover:bg-white'}>Reopen</button>}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </main>
+    );
+}
+
 function Reports() {
     const today = new Date();
     const mtdFrom = iso(new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1)));
@@ -220,14 +416,28 @@ function Reports() {
     const [bs, setBs] = useState<Record<string, any> | null>(null);
     const [tb, setTb] = useState<Record<string, any> | null>(null);
     const [jr, setJr] = useState<Record<string, any> | null>(null);
+    const [qbMonth, setQbMonth] = useState(iso(today).slice(0, 7));
+    const [qbMsg, setQbMsg] = useState('');
+    const [qbErr, setQbErr] = useState('');
 
     function run() {
-        api.get('/api/reports/profit-loss?from=' + from + '&to=' + to).then((r) => setPl(r.data)).catch(() => {});
-        api.get('/api/reports/balance-sheet?as_of=' + asOf).then((r) => setBs(r.data)).catch(() => {});
-        api.get('/api/ledger/accounts?from=' + from + '&to=' + to).then((r) => setTb(r.data)).catch(() => {});
-        api.get('/api/ledger/journal?from=' + from + '&to=' + to).then((r) => setJr(r.data)).catch(() => {});
+        lapi.get('/api/reports/profit-loss?from=' + from + '&to=' + to).then((r) => setPl(r.data)).catch(() => {});
+        lapi.get('/api/reports/balance-sheet?as_of=' + asOf).then((r) => setBs(r.data)).catch(() => {});
+        lapi.get('/api/ledger/accounts?from=' + from + '&to=' + to).then((r) => setTb(r.data)).catch(() => {});
+        lapi.get('/api/ledger/journal?from=' + from + '&to=' + to).then((r) => setJr(r.data)).catch(() => {});
     }
     useEffect(run, []);
+
+    async function exportQb(path: string) {
+        if (!qbMonth) { setQbErr('Pick a month first — QuickBooks exports are one month at a time.'); return; }
+        if (!window.confirm('Export ' + qbMonth + ' for QuickBooks? You are exporting business records assembled by an autonomous pipeline — verify totals against your POS before accounting use.')) return;
+        setQbErr(''); setQbMsg('');
+        try {
+            const r = await lapi.get(path + '?month=' + qbMonth + '&ack=true');
+            download(r.data.filename, r.data.content, r.data.mimeType || 'text/plain');
+            setQbMsg('Downloaded ' + r.data.filename + (r.data.lines ? ' (' + r.data.lines + ' lines)' : '') + '.');
+        } catch (e) { setQbErr((e as { message?: string }).message || 'Export failed'); }
+    }
 
     const Row = ({ name, val, strong }: { name: string; val: number; strong?: boolean }) => (
         <div className={'flex justify-between text-sm py-1 ' + (strong ? 'border-t border-[#b68235] text-[#8a5f22]' : 'border-b border-[#e0ddd8]/60')}><span>{name}</span><span className='tabular-nums'>{money(val)}</span></div>
@@ -309,6 +519,17 @@ function Reports() {
                     </div>
                 )}
             </section>
+            <section className='border border-[#e0ddd8] rounded bg-white/60 p-4 flex flex-col gap-2'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>QuickBooks bridge · optional</div>
+                <p className='text-sm opacity-80'>One month at a time — QBO rejects larger imports and caps journal files at 1,000 lines. The CSV imports via Settings → Import Data → Journal Entries; the IIF file is for QuickBooks Desktop.</p>
+                <div className='flex items-end gap-3 flex-wrap'>
+                    <label className='text-xs flex flex-col gap-1'><span className='opacity-70'>Month</span><input type='month' value={qbMonth} onChange={(e) => setQbMonth(e.target.value)} className='border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm' /></label>
+                    <button onClick={() => exportQb('/api/export/qbo-journal')} className={btnOn}>QBO journal CSV</button>
+                    <button onClick={() => exportQb('/api/export/iif')} className={btnOn}>IIF (QB Desktop)</button>
+                    {qbMsg && <span className='text-sm text-[#8a5f22] inline-flex items-center gap-1'><Check size={15} />{qbMsg}</span>}
+                    {qbErr && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{qbErr}</span>}
+                </div>
+            </section>
         </main>
     );
 }
@@ -324,7 +545,7 @@ function Scanner() {
     const [hist, setHist] = useState<Array<Record<string, any>>>([]);
     const [copied, setCopied] = useState(false);
 
-    function refresh() { api.get('/api/invoices').then((r) => setHist(r.data.invoices || [])).catch(() => {}); }
+    function refresh() { lapi.get('/api/invoices').then((r) => setHist(r.data.invoices || [])).catch(() => {}); }
     useEffect(() => {
         api.get('/api/disclaimer').then((r) => setDisc(r.data.disclaimer)).catch(() => setDisc('Automated AI extraction. Verify every figure before posting to your books. Records data only; never moves money.'));
         refresh();
@@ -335,7 +556,7 @@ function Scanner() {
         setBusy(true); setErr(''); setRes(null); setCopied(false); setLastId(null); setPostedNo('');
         try {
             const prep = await image.resizeIfNeeded(f);
-            const r = await api.post('/api/invoices/scan', { image: prep.data, mimeType: prep.mimeType, ack: true });
+            const r = await lapi.post('/api/invoices/scan', { image: prep.data, mimeType: prep.mimeType, ack: true });
             setRes(r.data.extracted as Extracted);
             setLastId(r.data.id || null);
             refresh();
@@ -349,7 +570,7 @@ function Scanner() {
         if (!lastId || postedNo) return;
         if (!window.confirm('Post this invoice to your books? Verify every figure first — posting records a journal entry in the ledger. Nothing is filed and no money moves.')) return;
         try {
-            const r = await api.post('/api/invoices/post', { id: lastId, ack: true });
+            const r = await lapi.post('/api/invoices/post', { id: lastId, ack: true });
             setPostedNo(r.data.journalNo);
             refresh();
         } catch (e) { setErr((e as { message?: string }).message || 'Posting failed'); }
@@ -431,8 +652,8 @@ function Ap() {
     const [busy, setBusy] = useState(false);
 
     function refresh() {
-        api.get('/api/ap/aging').then((r) => setAging(r.data)).catch(() => {});
-        api.get('/api/checks/register' + (filter ? '?status=' + filter : '')).then((r) => setChecks(r.data.checks || [])).catch(() => {});
+        lapi.get('/api/ap/aging').then((r) => setAging(r.data)).catch(() => {});
+        lapi.get('/api/checks/register' + (filter ? '?status=' + filter : '')).then((r) => setChecks(r.data.checks || [])).catch(() => {});
     }
     useEffect(refresh, [filter]);
 
@@ -441,7 +662,7 @@ function Ap() {
         if (!window.confirm('Record this payment? This books a payment you already made through your bank or by check - nothing is filed and no money moves. Verify the figures first.')) return;
         setBusy(true); setErr(''); setMsg('');
         try {
-            const r = await api.post('/api/ap/pay', { ack: true, id: payFor.id, payment_date: payDate, check_number: payCheck.trim() || undefined });
+            const r = await lapi.post('/api/ap/pay', { ack: true, id: payFor.id, payment_date: payDate, check_number: payCheck.trim() || undefined });
             setMsg('Recorded: ' + (r.data.vendor || 'vendor') + (r.data.invoiceNo ? ' #' + r.data.invoiceNo : '') + ' - ' + money(r.data.amount) + ' via ' + r.data.method + (payCheck.trim() ? '. The check is now outstanding in the register.' : ''));
             setPayFor(null); setPayCheck('');
             refresh();
@@ -450,7 +671,7 @@ function Ap() {
     }
     async function setStatus(checkNumber: string, status: string) {
         setErr('');
-        try { await api.post('/api/checks/register', { check_number: checkNumber, status }); refresh(); }
+        try { await lapi.post('/api/checks/register', { check_number: checkNumber, status }); refresh(); }
         catch (e) { setErr((e as { message?: string }).message || 'Update failed'); }
     }
 
@@ -523,11 +744,16 @@ function Ap() {
 }
 
 const GUIDE_KB: Array<{ keys: string[]; a: string }> = [
-    { keys: ['bank', 'statement', 'import'], a: 'Bank CSV is exactly three columns: date,description,amount (dates YYYY-MM-DD; deposits positive, spending negative). Card settlements, delivery payouts, and cash deposits auto-match to clearing accounts; a withdrawal like CHECK #1041 clears a matching outstanding check; everything else waits in the review queue for you to categorize.' },
+    { keys: ['bank', 'statement'], a: 'Bank CSV is exactly three columns: date,description,amount (dates YYYY-MM-DD; deposits positive, spending negative). Card settlements, delivery payouts, and cash deposits auto-match to clearing accounts; a withdrawal like CHECK #1041 clears a matching outstanding check; everything else waits in the review queue for you to categorize.' },
     { keys: ['scan', 'invoice', 'photo', 'ocr'], a: 'On the Invoice Scanner tab, photograph a supplier invoice and the AI extracts the line items - amounts it cannot read are flagged, never guessed. Review, then Post to books to record it as Accounts Payable.' },
-    { keys: ['aging', 'bill', 'vendor', 'payable', 'a/p', 'ap ', 'pay'], a: 'A/P & Checks bins unpaid posted invoices 0-15 / 16-30 / 31+ days by invoice date. Record payment books the payment (debit Accounts Payable, credit Cash) - this app never moves money. Paying by check also registers the check as outstanding.' },
-    { keys: ['check', 'register', 'void', 'outstanding', 'clear'], a: 'The check register tracks every check: outstanding, cleared, amount mismatch, or void. Import bank activity containing Check #123 withdrawals and matching outstanding checks clear automatically; mismatched amounts are flagged.' },
-    { keys: ['daily', 'sales', 'post', 'daybook'], a: 'Post each day of sales on the Daybook tab: food, beverage, tax, tips, cash, and processing fees become one balanced journal entry. That feeds cash, the P&L, and prime cost.' },
+    { keys: ['aging', 'bill', 'vendor', 'payable', 'a/p', 'ap '], a: 'A/P & Checks bins unpaid posted invoices 0-15 / 16-30 / 31+ days by invoice date. Record payment books the payment (debit Accounts Payable, credit Cash) - this app never moves money. Paying by check also registers the check as outstanding.' },
+    { keys: ['check', 'register', 'void', 'outstanding'], a: 'The check register tracks every check: outstanding, cleared, amount mismatch, or void. Import bank activity containing Check #123 withdrawals and matching outstanding checks clear automatically; mismatched amounts are flagged.' },
+    { keys: ['delivery', 'doordash', 'uber', 'grubhub', 'payout'], a: 'The Delivery tab records platform payout statements. The identity net_payout = gross - commissions - marketing - refunds is enforced; each statement posts one journal entry, and the payout waits in Delivery Payout Clearing until the bank feed clears it. Driver tips are pass-through and never posted.' },
+    { keys: ['payroll', 'wages', 'gusto', 'adp', 'paychex', 'pay run'], a: 'The Payroll tab records what your payroll provider reports - this app never runs payroll. Each run books BOH/FOH wages, employer taxes, and the payable accounts. provider_remits_taxes=true adds a remittance sweep; false leaves liabilities on the books, feeding the compliance calendar.' },
+    { keys: ['compliance', 'deadline', 'tax', 'famli', 'dr 0100', 'dr 1094', 'uitr', '941', '940', 'filing'], a: 'The Compliance tab tracks CO + federal deadlines: DR 0100 (sales tax, monthly), DR 1094 (withholding, monthly), FAMLI and UITR-1 (quarterly), Form 941 (quarterly), Form 940 (annual). Estimated amounts come live from the liability balances on your books. Mark filed when you file; overdue periods with zero balance file themselves. It reminds - it never files for you.' },
+    { keys: ['quickbooks', 'qbo', 'iif', 'export'], a: 'QuickBooks is optional. On the Reports tab, export a month as a QBO journal CSV (Settings > Import Data > Journal Entries; 1,000-line cap) or as IIF for QuickBooks Desktop. One month at a time - QBO rejects larger imports.' },
+    { keys: ['location', 'restaurant', 'workspace', 'multi', 'switch'], a: 'Each location keeps its own isolated books - journal, bank queue, A/P, delivery, payroll, compliance, and reports are all scoped to the active location. Switch or add locations from the picker in the header; the page reloads into that location’s books.' },
+    { keys: ['daily', 'sales', 'daybook'], a: 'Post each day of sales on the Daybook tab: food, beverage, tax, tips, cash, and processing fees become one balanced journal entry. That feeds cash, the P&L, and prime cost.' },
     { keys: ['p&l', 'profit', 'report', 'balance sheet', 'trial', 'journal', 'print'], a: 'Reports covers P&L, Balance Sheet, Trial Balance, and the General Journal. Use Print for a clean paper copy. The Balance Sheet self-checks: assets must equal liabilities + equity.' },
     { keys: ['prime', 'kpi', 'food cost', 'labor'], a: 'Prime cost = COGS + labor as a percent of revenue; the industry warning line is 65%. Food and beverage cost percentages compare each cost to its own sales line.' },
     { keys: ['money', 'move', 'file', 'safe'], a: 'Recording only: this system never moves money and never files anything. Every posting needs your explicit confirmation, and AI-read amounts are flagged when uncertain - never guessed.' }
@@ -544,18 +770,21 @@ function Guide({ view }: { view: string }) {
         const from = iso(new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1)));
         const settle = (p: Promise<{ data: Record<string, any> }>) => p.then((r) => r.data).catch(() => null);
         Promise.all([
-            settle(api.get('/api/daybook?from=' + from + '&to=' + iso(today))),
-            settle(api.get('/api/bank/queue')),
-            settle(api.get('/api/ap/aging')),
-            settle(api.get('/api/reports/balance-sheet?as_of=' + iso(today)))
-        ]).then(([d, b, ap, bs]) => {
+            settle(lapi.get('/api/daybook?from=' + from + '&to=' + iso(today))),
+            settle(lapi.get('/api/bank/queue')),
+            settle(lapi.get('/api/ap/aging')),
+            settle(lapi.get('/api/compliance/events')),
+            settle(lapi.get('/api/reports/balance-sheet?as_of=' + iso(today)))
+        ]).then(([d, b, ap, comp, bs]) => {
             const qn = b && b.queue ? (b.queue as Array<unknown>).length : 0;
             const un = d ? Number(d.unposted) || 0 : 0;
+            const od = comp && comp.overdue ? (comp.overdue as Array<unknown>).length : 0;
             setSteps([
                 { done: !!(d && d.totals && d.totals.revenue > 0), label: 'Post daily sales (this month)', hash: '#/daybook' },
                 { done: un === 0, label: un > 0 ? 'Post scanned invoices (' + un + ' waiting)' : 'Post scanned invoices', hash: '#/scanner' },
                 { done: qn === 0, label: qn > 0 ? 'Clear the bank review queue (' + qn + ')' : 'Clear the bank review queue', hash: '#/bank' },
                 { done: !!(ap && !((ap.bins || []) as Array<Record<string, any>>).some((x) => ((x.invoices || []) as Array<Record<string, any>>).some((i) => i.pastDue))), label: 'No bills past due', hash: '#/ap' },
+                { done: od === 0, label: od > 0 ? 'Tax filings overdue (' + od + ')' : 'No tax deadlines overdue', hash: '#/compliance' },
                 { done: !!(bs && bs.balanced), label: 'Books in balance', hash: '#/reports' }
             ]);
         });
@@ -563,17 +792,20 @@ function Guide({ view }: { view: string }) {
     const tips: Record<string, string> = {
         bank: 'Import a statement, then work the review queue to zero - unrecognized lines are parked, never posted.',
         ap: 'Watch the 31+ day bin. Recording a check payment also adds it to the register as outstanding.',
-        reports: 'Pick a period, then Print gives you a clean paper copy.',
+        delivery: 'The payout identity is enforced on import - if a statement rejects, the platform’s own math does not reconcile.',
+        payroll: 'Import each pay run from your provider’s report. Liabilities left on the books feed the compliance calendar.',
+        compliance: 'Estimated amounts are live liability balances - post payroll and daily sales first, then trust these numbers.',
+        reports: 'Pick a period, then Print gives you a clean paper copy. The QuickBooks bridge below exports one month at a time.',
         scanner: 'Photograph the whole invoice in good light; blurry amounts come back flagged, never guessed.',
         daybook: 'One balanced journal entry per business day - post it after close.',
-        home: 'Work left to right: Daybook, Bank, A/P, Reports. Open me anytime for the closing checklist.'
+        home: 'Work left to right: Daybook, Bank, A/P, Delivery, Payroll, Reports, Compliance. Open me anytime for the closing checklist.'
     };
     function ask(e: { preventDefault: () => void }) {
         e.preventDefault();
         const s = q.trim().toLowerCase();
         if (!s) return;
         const hit = GUIDE_KB.find((k) => k.keys.some((key) => s.includes(key)));
-        setA(hit ? hit.a : 'No note on that yet. Try: bank import, invoice scanning, aging, check register, daily sales, reports, or prime cost.');
+        setA(hit ? hit.a : 'No note on that yet. Try: bank import, invoice scanning, aging, checks, delivery, payroll, compliance, QuickBooks, locations, daily sales, reports, or prime cost.');
     }
     const next = steps ? steps.find((s) => !s.done) : null;
     return (
@@ -594,7 +826,7 @@ function Guide({ view }: { view: string }) {
                         {steps && (next ? <p className='text-sm mt-2'><strong>Next up:</strong> {next.label} <a href={next.hash} className='text-[#8a5f22]'>open →</a></p> : <p className='text-sm mt-2'>All clear - the books are closed up. ✦</p>)}
                     </div>
                     <form onSubmit={ask} className='flex gap-2'>
-                        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder='e.g. bank CSV, prime cost…' aria-label='Ask the guide' className='flex-1 border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm' />
+                        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder='e.g. payroll CSV, compliance…' aria-label='Ask the guide' className='flex-1 border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm' />
                         <button type='submit' className={btnOn + ' !px-3 !py-1'}>Ask</button>
                     </form>
                     {a && <p className='text-sm'>{a}</p>}
@@ -611,39 +843,77 @@ function App() {
         if (h === '#/daybook') return 'daybook';
         if (h === '#/bank') return 'bank';
         if (h === '#/ap') return 'ap';
+        if (h === '#/delivery') return 'delivery';
+        if (h === '#/payroll') return 'payroll';
+        if (h === '#/compliance') return 'compliance';
         if (h === '#/reports') return 'reports';
         return 'home';
     };
     const [view, setView] = useState<string>(fromHash());
     const [scanCount, setScanCount] = useState(0);
+    const [locs, setLocs] = useState<Array<Record<string, any>>>([]);
 
     useEffect(() => {
         const onHash = () => setView(fromHash());
         window.addEventListener('hashchange', onHash);
-        api.get('/api/invoices').then((r) => setScanCount((r.data.invoices || []).length)).catch(() => {});
+        lapi.get('/api/invoices').then((r) => setScanCount((r.data.invoices || []).length)).catch(() => {});
+        api.get('/api/locations').then((r) => setLocs(r.data.locations || [])).catch(() => {});
         return () => window.removeEventListener('hashchange', onHash);
     }, []);
 
+    async function switchLoc(v: string) {
+        if (v === '__add') {
+            const name = window.prompt('New location name:');
+            if (!name || !name.trim()) return;
+            try {
+                const r = await api.post('/api/locations', { name: name.trim() });
+                localStorage.setItem('rb_location', String(r.data.id));
+                window.location.reload();
+            } catch (e) { window.alert((e as { message?: string }).message || 'Could not create location'); }
+            return;
+        }
+        localStorage.setItem('rb_location', v);
+        window.location.reload();
+    }
+
     const go = (v: string) => { window.location.hash = v === 'home' ? '#/' : '#/' + v; setView(v); };
     const tab = (active: boolean) => active ? 'text-sm text-[#8a5f22] border-b-2 border-[#b68235] pb-0.5' : 'text-sm opacity-70 hover:opacity-100 pb-0.5 border-b-2 border-transparent';
+    const currentLoc = locs.some((l) => String(l.id) === activeLoc) ? activeLoc : String(locs.find((l) => l.isDefault)?.id ?? '');
 
     return (
         <div className='min-h-screen bg-[#f3f2f2] text-[#201f1d] font-serif'>
-            <header className='border-b border-[#e0ddd8] bg-[#faf9f7] px-6 py-4 flex items-center gap-6 flex-wrap'>
+            <header className='border-b border-[#e0ddd8] bg-[#faf9f7] px-6 py-4 flex items-center gap-5 flex-wrap'>
                 <button onClick={() => go('home')} className='flex items-center gap-3'>
                     <Crate size={30} />
                     <h1 className='text-2xl'>Restaurant Bookkeeper <span className='text-[#b68235] text-sm'>/ in a box</span></h1>
                 </button>
-                <nav className='flex items-center gap-5 ml-auto'>
+                {locs.length > 0 && (
+                    <select value={currentLoc} onChange={(e) => switchLoc(e.target.value)} title='Active location' aria-label='Active location' className='border border-[#e0ddd8] rounded px-2 py-1.5 text-xs bg-white'>
+                        {locs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                        <option value='__add'>+ Add location…</option>
+                    </select>
+                )}
+                <nav className='flex items-center gap-4 ml-auto flex-wrap'>
                     <button className={tab(view === 'home')} onClick={() => go('home')} aria-current={view === 'home' ? 'page' : undefined}>Home</button>
                     <button className={tab(view === 'daybook')} onClick={() => go('daybook')} aria-current={view === 'daybook' ? 'page' : undefined}>Daybook</button>
                     <button className={tab(view === 'bank')} onClick={() => go('bank')} aria-current={view === 'bank' ? 'page' : undefined}>Bank</button>
                     <button className={tab(view === 'ap')} onClick={() => go('ap')} aria-current={view === 'ap' ? 'page' : undefined}>A/P &amp; Checks</button>
+                    <button className={tab(view === 'delivery')} onClick={() => go('delivery')} aria-current={view === 'delivery' ? 'page' : undefined}>Delivery</button>
+                    <button className={tab(view === 'payroll')} onClick={() => go('payroll')} aria-current={view === 'payroll' ? 'page' : undefined}>Payroll</button>
                     <button className={tab(view === 'reports')} onClick={() => go('reports')} aria-current={view === 'reports' ? 'page' : undefined}>Reports</button>
+                    <button className={tab(view === 'compliance')} onClick={() => go('compliance')} aria-current={view === 'compliance' ? 'page' : undefined}>Compliance</button>
                     <button className={tab(view === 'scanner')} onClick={() => go('scanner')} aria-current={view === 'scanner' ? 'page' : undefined}>Invoice Scanner</button>
                 </nav>
             </header>
-            {view === 'home' ? <Home go={go} scanCount={scanCount} /> : view === 'daybook' ? <Daybook /> : view === 'bank' ? <Bank /> : view === 'ap' ? <Ap /> : view === 'reports' ? <Reports /> : <Scanner />}
+            {view === 'home' ? <Home go={go} scanCount={scanCount} />
+                : view === 'daybook' ? <Daybook />
+                : view === 'bank' ? <Bank />
+                : view === 'ap' ? <Ap />
+                : view === 'delivery' ? <Delivery />
+                : view === 'payroll' ? <Payroll />
+                : view === 'compliance' ? <Compliance />
+                : view === 'reports' ? <Reports />
+                : <Scanner />}
             <Guide view={view} />
         </div>
     );
