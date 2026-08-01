@@ -160,6 +160,9 @@ main { max-width: 1220px; margin: 0 auto; padding: 34px 40px 46px; display: flex
     <span>Restaurant Bookkeeper <span class="sub">/ in a box</span></span>
   </div>
   <a class="navlink" href="/" aria-current="page">Daybook</a>
+  <a class="navlink" href="/bank.html">Bank</a>
+  <a class="navlink" href="/reports.html">Reports</a>
+  <a class="navlink" href="/ap.html">A/P &amp; Checks</a>
   <a class="navlink" href="/ledger.html">Ledger</a>
   <a class="navlink" href="/console.html">Imports</a>
   <div class="spacer"></div>
@@ -369,8 +372,8 @@ async function loadChecklist() {
     settle(api('/api/compliance/events')), settle(api('/api/inventory/count')), settle(api('/api/reports/balance-sheet?as_of=' + iso(today))),
   ]);
   add(!!(imp && (imp.validatedThisWeek || (imp.lastImportAt && (today - new Date(imp.lastImportAt)) < week))), 'Import POS sales (this week)', '/console.html');
-  add(!!(bank && bank.unmatched && bank.unmatched.length === 0), 'Clear the bank feed queue', '/console.html');
-  add(!!(ap && ap.bins && !ap.bins.some((b) => b.invoices.some((i) => i.pastDue))), 'No bills past due', '/console.html');
+  add(!!(bank && bank.unmatched && bank.unmatched.length === 0), 'Clear the bank feed queue', '/bank.html');
+  add(!!(ap && ap.bins && !ap.bins.some((b) => b.invoices.some((i) => i.pastDue))), 'No bills past due', '/ap.html');
   add(!!(comp && comp.overdue && comp.overdue.length === 0), 'No tax deadlines overdue', '/ledger.html');
   add(!!(inv && inv.counts && inv.counts[0] && (today - new Date(inv.counts[0].countDate)) < month31), 'Physical inventory (this month)', '/console.html');
   add(!!(bs && bs.balanced), 'Books in balance', '/ledger.html');

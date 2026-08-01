@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reports · Restaurant Bookkeeper in a Box</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="var(--color-accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M17 3.2 30.5 10v14L17 30.8 3.5 24V10z"></path>
+      <path d="M3.5 10 17 16.8 30.5 10"></path>
+      <path d="M17 16.8V30.8"></path>
+      <path d="M11 20.2v4.4M17 22.6v4.4M23 20.2v4.4"></path>
+    </svg>
+    <span>Restaurant Bookkeeper <span class="sub">/ in a box</span></span>
+  </div>
+  <a class="navlink" href="/">Daybook</a>
+  <a class="navlink" href="/bank.html">Bank</a>
+  <a class="navlink" href="/reports.html" aria-current="page">Reports</a>
+  <a class="navlink" href="/ap.html">A/P &amp; Checks</a>
+  <a class="navlink" href="/ledger.html">Ledger</a>
+  <a class="navlink" href="/console.html">Imports</a>
+  <div class="spacer"></div>
+  <select id="locationPicker" class="btn" title="Switch location" hidden></select>
+</nav>
+
+<main>
+  <div id="gate" class="notice" hidden></div>
+
+  <div class="no-print">
+    <div class="kicker">Financial statements</div>
+    <h1 style="font-size:32px; margin:6px 0 4px;">Printable Reports</h1>
+    <p class="muted" style="margin:0; max-width:640px;">Profit &amp; Loss and Balance Sheet for <strong data-location-name>the active location</strong>, straight from the double-entry ledger. Print gives you a clean paper document; CSV downloads the same figures.</p>
+  </div>
+
+  <div class="toolbar no-print">
+    <div class="seg" role="radiogroup" aria-label="Period preset">
+      <label><input type="radio" name="preset" value="month" checked>This month</label>
+      <label><input type="radio" name="preset" value="lastmonth">Last month</label>
+      <label><input type="radio" name="preset" value="quarter">Quarter</label>
+      <label><input type="radio" name="preset" value="ytd">YTD</label>
+    </div>
+    <label>From <input type="date" id="from"></label>
+    <label>To <input type="date" id="to"></label>
+    <button class="btn btn-primary" id="runBtn">Run reports</button>
+    <span class="spacer" style="flex:1;"></span>
+    <button class="btn" id="printBtn">Print</button>
+    <a class="btn" id="plCsv" href="#" download>P&amp;L CSV</a>
+    <a class="btn" id="bsCsv" href="#" download>Balance Sheet CSV</a>
+  </div>
+
+  <!-- ── P&L ── -->
+  <section class="card" style="gap:14px;">
+    <div style="text-align:center;">
+      <div class="kicker">Profit &amp; Loss</div>
+      <h2 style="font-size:24px;" id="plTitle">Run reports to begin</h2>
+      <p class="muted" style="margin:2px 0 0; font-size:12px;" id="plSub">&nbsp;</p>
+    </div>
+    <div class="grid-4" id="plKpis" hidden>
+      <div class="card kpi"><div class="kicker">Food cost</div><div class="fig tnum" id="kFood">—</div><div class="meta muted">of food sales</div></div>
+      <div class="card kpi"><div class="kicker">Beverage cost</div><div class="fig tnum" id="kBev">—</div><div class="meta muted">of beverage sales</div></div>
+      <div class="card kpi"><div class="kicker">Labor</div><div class="fig tnum" id="kLabor">—</div><div class="meta muted">of revenue</div></div>
+      <div class="card kpi"><div class="kicker">Prime cost</div><div class="fig tnum" id="kPrime">—</div><div class="meta muted" id="kPrimeMeta">COGS + labor · 65% line</div></div>
+    </div>
+    <table class="table tnum">
+      <thead><tr><th style="width:55%;">Account</th><th></th><th class="amount">Amount</th></tr></thead>
+      <tbody id="plBody"><tr><td colspan="3" class="muted">No report yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <!-- ── Balance Sheet ── -->
+  <section class="card" style="gap:14px; break-before: page;">
+    <div style="text-align:center;">
+      <div class="kicker">Balance Sheet</div>
+      <h2 style="font-size:24px;" id="bsTitle">&nbsp;</h2>
+      <p style="margin:2px 0 0; font-size:12px;" id="bsBadge"></p>
+    </div>
+    <table class="table tnum">
+      <thead><tr><th style="width:55%;">Account</th><th></th><th class="amount">Amount</th></tr></thead>
+      <tbody id="bsBody"><tr><td colspan="3" class="muted">No report yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <p class="muted" style="font-size:11px; margin:0;" id="stamp"></p>
+</main>
+
+<script src="/ui.js"></script>
+<script>
+'use strict';
+const today = new Date();
+
+function presetRange(kind) {
+  const y = today.getFullYear(), m = today.getMonth();
+  if (kind === 'ytd') return [y + '-01-01', iso(today)];
+  if (kind === 'quarter') { const qm = m - (m % 3); return [iso(new Date(Date.UTC(y, qm, 1))), iso(today)]; }
+  if (kind === 'lastmonth') {
+    return [iso(new Date(Date.UTC(y, m - 1, 1))), iso(new Date(Date.UTC(y, m, 0)))];
+  }
+  return [iso(new Date(Date.UTC(y, m, 1))), iso(today)];
+}
+
+function applyPreset(kind) {
+  const [f, t] = presetRange(kind);
+  $('from').value = f;
+  $('to').value = t;
+}
+document.querySelectorAll('input[name=preset]').forEach((r) =>
+  r.addEventListener('change', () => { applyPreset(r.value); run(); }));
+
+const sectionRow = (label) =>
+  '<tr><td colspan="3" style="font-family:var(--font-heading); font-size:15px; padding-top:16px;">' + label + '</td></tr>';
+const acctRow = (r) =>
+  '<tr><td style="padding-left:28px;">' + esc(r.name) + '</td><td></td><td class="amount">' + money(r.balance) + '</td></tr>';
+const totalRow = (label, v, strong) =>
+  '<tr><td' + (strong ? ' style="font-weight:600;"' : '') + '>' + label + '</td><td></td><td class="amount"' +
+  (strong ? ' style="font-weight:600; border-top:2px solid var(--color-divider);"' : '') + '>' + money(v) + '</td></tr>';
+
+async function run() {
+  const from = $('from').value, to = $('to').value;
+  if (!from || !to) return;
+  $('plCsv').href = '/api/reports/profit-loss?format=csv&from=' + from + '&to=' + to;
+  $('bsCsv').href = '/api/reports/balance-sheet?format=csv&as_of=' + to;
+
+  let pl = null, bs = null;
+  try {
+    const [rp, rb] = await Promise.all([
+      api('/api/reports/profit-loss?from=' + from + '&to=' + to),
+      api('/api/reports/balance-sheet?as_of=' + to),
+    ]);
+    if (rp.ok) pl = await rp.json();
+    if (rb.ok) bs = await rb.json();
+  } catch { return; /* gate shown */ }
+
+  if (pl) {
+    $('plTitle').textContent = pl.location + ' — Profit & Loss';
+    $('plSub').textContent = pl.from + ' through ' + pl.to;
+    $('plKpis').hidden = false;
+    const pct = (v) => (v === null || v === undefined) ? '—' : v.toFixed(1) + '%';
+    $('kFood').textContent = pct(pl.kpis.foodCostPct);
+    $('kBev').textContent = pct(pl.kpis.beverageCostPct);
+    $('kLabor').textContent = pct(pl.kpis.laborCostPct);
+    $('kPrime').textContent = pct(pl.kpis.primeCostPct);
+    $('kPrimeMeta').textContent = pl.kpis.primeCostStatus === 'healthy'
+      ? 'healthy · under the 65% line'
+      : (pl.kpis.primeCostStatus ? 'over the 65% line — review COGS & labor' : 'COGS + labor · 65% line');
+    $('plBody').innerHTML =
+      sectionRow('Revenue') + pl.revenue.map(acctRow).join('') + totalRow('Total revenue', pl.totals.revenue) +
+      sectionRow('Cost of goods sold') + pl.cogs.map(acctRow).join('') + totalRow('Total COGS', pl.totals.cogs) +
+      totalRow('Gross profit', pl.totals.grossProfit, true) +
+      sectionRow('Operating expenses') + pl.expenses.map(acctRow).join('') + totalRow('Total expenses', pl.totals.expenses) +
+      totalRow('Net income', pl.totals.netIncome, true);
+  }
+
+  if (bs) {
+    $('bsTitle').textContent = bs.location + ' — Balance Sheet as of ' + bs.asOf;
+    $('bsBadge').innerHTML = bs.balanced
+      ? '<span class="tag tag-accent">In balance</span>'
+      : '<span class="tag tag-danger">Out of balance — review the ledger</span>';
+    $('bsBody').innerHTML =
+      sectionRow('Assets') + bs.assets.map(acctRow).join('') + totalRow('Total assets', bs.totals.assets, true) +
+      sectionRow('Liabilities') + bs.liabilities.map(acctRow).join('') + totalRow('Total liabilities', bs.totals.liabilities) +
+      sectionRow('Equity') + bs.equity.map(acctRow).join('') +
+      totalRow('Net income to date', bs.netIncomeToDate) +
+      totalRow('Total equity', bs.totals.equity) +
+      totalRow('Total liabilities + equity', bs.totals.liabilitiesAndEquity, true);
+  }
+
+  $('stamp').textContent = 'Generated ' + new Date().toLocaleString() +
+    ' · Assembled by an autonomous pipeline — verify totals against your POS before filing.';
+}
+
+$('runBtn').onclick = run;
+$('printBtn').onclick = () => window.print();
+applyPreset('month');
+initWorkspace();
+run();
+initGuide('reports');
+</script>
+</body>
+</html>
