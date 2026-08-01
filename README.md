@@ -9,18 +9,19 @@ compliance tracking, check reconciliation, and QuickBooks-optional export
 bridges. One app, one login, multiple isolated location workspaces.
 
 **Live deployment:** the production instance runs on
-[Hatchable](https://hatchable.com) at `bookkeeper-in-a-box.hatchable.site`.
-This repository is the version-controlled source of truth for that codebase.
+[AppDeploy](https://dashboard.appdeploy.ai) at
+`invoice-scanner-restaurant-bookkeeper-f35e4x.v2.appdeploy.ai`. This
+repository is the version-controlled source of truth for that app: the
+canonical product code lives in **`app/`** and is deployed to AppDeploy.
 
-## Architecture
+## Repository layout
 
 | Layer | What it is |
 |---|---|
-| `migrations/` | Postgres schema, applied in filename order. Central Postgres is the sole source of truth — local files are import/export only. |
-| `lib/` | The engine: double-entry ledger, tenant model, matching engines, report builders, validators. Pure logic + a thin `db` gateway. |
-| `api/` | HTTP routes (file-based routing). Every location-scoped route resolves the caller's active workspace before touching data. |
-| `public/` | Operator console (vanilla HTML/JS, no build step). |
-| `hatchable.toml` | Cron schedules (daily compliance sweep). |
+| **`app/`** | **The product (canonical).** React + Vite + Tailwind frontend (`app/src/`) and AppDeploy SDK backend (`app/backend/index.ts`): Daybook, Bank import with check clearing, A/P aging + check register, printable Reports, AI Invoice Scanner, and the in-app bookkeeper Guide. Deployed to AppDeploy. |
+| `api/`, `lib/`, `migrations/`, `public/`, `hatchable.toml` | **Legacy (Hatchable engine).** The earlier multi-tenant Postgres implementation, kept as reference for features not yet ported to `app/` (multi-location workspaces, POS CSV contract, delivery reconciliation, payroll journals, compliance calendar, QuickBooks exports, billing). Not deployed. |
+
+### Legacy engine reference (Hatchable era — superseded by `app/`)
 
 ### Multi-tenant model
 
