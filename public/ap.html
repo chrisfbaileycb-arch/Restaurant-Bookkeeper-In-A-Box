@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A/P &amp; Checks · Restaurant Bookkeeper in a Box</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="var(--color-accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M17 3.2 30.5 10v14L17 30.8 3.5 24V10z"></path>
+      <path d="M3.5 10 17 16.8 30.5 10"></path>
+      <path d="M17 16.8V30.8"></path>
+      <path d="M11 20.2v4.4M17 22.6v4.4M23 20.2v4.4"></path>
+    </svg>
+    <span>Restaurant Bookkeeper <span class="sub">/ in a box</span></span>
+  </div>
+  <a class="navlink" href="/">Daybook</a>
+  <a class="navlink" href="/bank.html">Bank</a>
+  <a class="navlink" href="/reports.html">Reports</a>
+  <a class="navlink" href="/ap.html" aria-current="page">A/P &amp; Checks</a>
+  <a class="navlink" href="/ledger.html">Ledger</a>
+  <a class="navlink" href="/console.html">Imports</a>
+  <div class="spacer"></div>
+  <select id="locationPicker" class="btn" title="Switch location" hidden></select>
+</nav>
+
+<main>
+  <div id="gate" class="notice" hidden></div>
+
+  <div>
+    <div class="kicker">Payables &amp; reconciliation</div>
+    <h1 style="font-size:32px; margin:6px 0 4px;">Accounts Payable &amp; Check Register</h1>
+    <p class="muted" style="margin:0; max-width:640px;">Unpaid vendor invoices aged by invoice date, and every check by status, for <strong data-location-name>the active location</strong>. Recording a payment never moves money — it books what you already paid.</p>
+  </div>
+
+  <!-- ── AP aging ── -->
+  <section class="card" style="gap:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+      <div>
+        <div class="kicker">Accounts payable</div>
+        <h2 style="font-size:20px;">Aging <span class="muted" style="font-size:13px;" id="apTotal"></span></h2>
+      </div>
+      <div class="toolbar no-print">
+        <label>As of <input type="date" id="apAsOf"></label>
+        <button class="btn btn-sm" id="apRun">Run</button>
+      </div>
+    </div>
+    <div class="grid-3" id="apBins" hidden>
+      <div class="card kpi"><div class="kicker">0–15 days</div><div class="fig tnum" id="bin0">—</div><div class="meta muted" id="bin0n"></div></div>
+      <div class="card kpi"><div class="kicker">16–30 days</div><div class="fig tnum" id="bin1">—</div><div class="meta muted" id="bin1n"></div></div>
+      <div class="card kpi"><div class="kicker">31+ days</div><div class="fig tnum" id="bin2">—</div><div class="meta muted" id="bin2n"></div></div>
+    </div>
+    <table class="table tnum">
+      <thead><tr><th>Invoice</th><th>Vendor</th><th>Invoice date</th><th>Due</th><th>Age</th><th class="amount">Amount</th><th class="no-print"></th></tr></thead>
+      <tbody id="apBody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <div id="payForm" hidden></div>
+    <div id="payDisclaimer"></div>
+    <div id="payErrors"></div>
+    <pre class="out" id="payOut" hidden></pre>
+  </section>
+
+  <!-- ── Check register ── -->
+  <section class="card" style="gap:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+      <div>
+        <div class="kicker">Reconciliation</div>
+        <h2 style="font-size:20px;">Check register</h2>
+        <p class="muted" style="margin:4px 0 0;">Matching runs automatically when statements land on the <a href="/bank.html">Bank tab</a>. Register CSV imports live on the <a href="/ledger.html">Ledger tab</a>.</p>
+      </div>
+      <div class="toolbar no-print">
+        <select id="ckFilter" class="btn">
+          <option value="">All statuses</option>
+          <option value="outstanding">Outstanding</option>
+          <option value="cleared">Cleared</option>
+          <option value="amount_mismatch">Amount mismatch</option>
+          <option value="void">Void</option>
+        </select>
+        <button class="btn btn-sm" id="ckRun">Refresh</button>
+      </div>
+    </div>
+    <table class="table tnum">
+      <thead><tr><th>Check #</th><th>Date</th><th>Payee</th><th>Memo</th><th>Bank</th><th>Status</th><th class="amount">Written</th><th class="no-print"></th></tr></thead>
+      <tbody id="ckBody"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+      <tfoot id="ckFoot"></tfoot>
+    </table>
+    <div id="ckErrors"></div>
+  </section>
+</main>
+
+<script src="/ui.js"></script>
+<script>
+'use strict';
+const STATUS_TAG = {
+  outstanding: '<span class="tag tag-outline">Outstanding</span>',
+  cleared: '<span class="tag tag-accent">Cleared</span>',
+  amount_mismatch: '<span class="tag tag-danger">Amount mismatch</span>',
+  void: '<span class="tag tag-neutral">Void</span>',
+};
+
+// ── AP aging ────────────────────────────────────────────────────────────────
+async function loadAging() {
+  let ap = null;
+  try {
+    const qs = $('apAsOf').value ? '?as_of=' + $('apAsOf').value : '';
+    const r = await api('/api/ap/aging' + qs);
+    if (r.ok) ap = await r.json();
+  } catch { /* gate shown */ }
+  const body = $('apBody');
+  if (!ap) {
+    body.innerHTML = '<tr><td colspan="7" class="muted">Aging unavailable — sign in with an active workspace.</td></tr>';
+    return;
+  }
+  $('apTotal').textContent = '· ' + money(ap.total) + ' outstanding as of ' + ap.asOf;
+  $('apBins').hidden = false;
+  ap.bins.forEach((b, i) => {
+    $('bin' + i).textContent = money(b.total);
+    $('bin' + i + 'n').textContent = b.invoices.length + ' invoice' + (b.invoices.length === 1 ? '' : 's');
+  });
+  const rows = ap.bins.flatMap((b) => b.invoices);
+  body.innerHTML = rows.length === 0
+    ? '<tr><td colspan="7" class="muted">Nothing unpaid — the payables are clean. ✦</td></tr>'
+    : rows.map((i) =>
+        '<tr><td>' + esc(i.invoiceNo) + '</td><td>' + esc(i.vendor) + '</td><td>' + esc(i.invoiceDate) + '</td>' +
+        '<td>' + esc(i.dueDate) + (i.pastDue ? ' <span class="tag tag-danger">Past due</span>' : '') + '</td>' +
+        '<td>' + i.daysOld + 'd</td><td class="amount">' + money(i.amount) + '</td>' +
+        '<td class="no-print"><button class="btn btn-sm" data-pay="' + esc(i.invoiceNo) + '" data-vendor="' + esc(i.vendor) + '" data-amount="' + i.amount + '">Record payment</button></td></tr>').join('');
+  body.querySelectorAll('[data-pay]').forEach((b) => { b.onclick = () => openPayForm(b.dataset); });
+}
+
+function openPayForm(d) {
+  const f = $('payForm');
+  f.hidden = false;
+  f.innerHTML =
+    '<div class="notice" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">' +
+    '<strong>Pay ' + esc(d.vendor) + ' #' + esc(d.pay) + '</strong> <span class="tnum">' + money(Number(d.amount)) + '</span>' +
+    '<label>Date <input type="date" id="payDate" value="' + iso(new Date()) + '"></label>' +
+    '<label>Check # <input type="text" id="payCheck" placeholder="blank = EFT/ACH" style="width:9rem;"></label>' +
+    '<button class="btn btn-primary btn-sm" id="paySubmit">Record</button>' +
+    '<button class="btn btn-ghost btn-sm" id="payCancel">Cancel</button></div>';
+  $('payCancel').onclick = () => { f.hidden = true; f.innerHTML = ''; };
+  $('paySubmit').onclick = async () => {
+    $('payErrors').innerHTML = '';
+    const bodyJson = { invoice_no: d.pay, payment_date: $('payDate').value };
+    if ($('payCheck').value.trim()) bodyJson.check_number = $('payCheck').value.trim();
+    const res = await callWithAck('ap_payment', 'payDisclaimer', (h) =>
+      api('/api/ap/pay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...h },
+        body: JSON.stringify(bodyJson),
+      }).catch(() => null));
+    if (!res) return;
+    const j = await res.json();
+    if (!res.ok) return showErrors('payErrors', j);
+    f.hidden = true; f.innerHTML = '';
+    $('payOut').hidden = false;
+    $('payOut').textContent = 'Recorded: ' + j.vendor + ' #' + j.invoiceNo + ' — ' + money(j.amount) +
+      ' on ' + j.paymentDate + ' via ' + j.method +
+      (j.method.startsWith('Check') ? ' (added to the register as outstanding)' : '');
+    loadAging();
+    loadRegister();
+  };
+}
+
+// ── Check register ──────────────────────────────────────────────────────────
+async function loadRegister() {
+  let data = null;
+  try {
+    const s = $('ckFilter').value;
+    const r = await api('/api/checks/register' + (s ? '?status=' + s : ''));
+    if (r.ok) data = await r.json();
+  } catch { /* gate shown */ }
+  const body = $('ckBody');
+  if (!data) {
+    body.innerHTML = '<tr><td colspan="8" class="muted">Register unavailable — sign in with an active workspace.</td></tr>';
+    return;
+  }
+  const checks = data.checks || [];
+  body.innerHTML = checks.length === 0
+    ? '<tr><td colspan="8" class="muted">No checks' + ($('ckFilter').value ? ' with this status' : ' registered yet') + '.</td></tr>'
+    : checks.map((c) =>
+        '<tr><td>' + esc(c.checkNumber) + '</td><td>' + esc(c.checkDate) + '</td><td>' + esc(c.payee) + '</td>' +
+        '<td class="muted">' + esc(c.memo || '') + '</td><td class="muted">' + esc(c.bankAccountId) + '</td>' +
+        '<td>' + (STATUS_TAG[c.status] || esc(c.status)) + '</td><td class="amount">' + money(c.writtenAmount) + '</td>' +
+        '<td class="no-print">' +
+        (c.status === 'outstanding' || c.status === 'amount_mismatch'
+          ? '<button class="btn btn-sm" data-ck="' + esc(c.checkNumber) + '" data-bank="' + esc(c.bankAccountId) + '" data-to="void">Void</button>'
+          : (c.status === 'void'
+            ? '<button class="btn btn-sm" data-ck="' + esc(c.checkNumber) + '" data-bank="' + esc(c.bankAccountId) + '" data-to="outstanding">Reopen</button>'
+            : '')) +
+        '</td></tr>').join('');
+  const outTotal = checks.filter((c) => c.status === 'outstanding').reduce((s, c) => s + c.writtenAmount, 0);
+  $('ckFoot').innerHTML = checks.length
+    ? '<tr><td colspan="6">Outstanding total</td><td class="amount">' + money(outTotal) + '</td><td class="no-print"></td></tr>'
+    : '';
+  body.querySelectorAll('[data-ck]').forEach((b) => {
+    b.onclick = async () => {
+      $('ckErrors').innerHTML = '';
+      const res = await api('/api/checks/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ check_number: b.dataset.ck, bank_account_id: b.dataset.bank, status: b.dataset.to }),
+      }).catch(() => null);
+      if (!res) return;
+      const j = await res.json();
+      if (!res.ok) return showErrors('ckErrors', j);
+      loadRegister();
+    };
+  });
+}
+
+$('apRun').onclick = loadAging;
+$('ckRun').onclick = loadRegister;
+$('ckFilter').onchange = loadRegister;
+$('apAsOf').value = iso(new Date());
+initWorkspace();
+loadAging();
+loadRegister();
+initGuide('ap');
+</script>
+</body>
+</html>

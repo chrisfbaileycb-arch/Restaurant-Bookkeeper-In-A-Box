@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bank Feeds · Restaurant Bookkeeper in a Box</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand">
+    <svg width="34" height="34" viewBox="0 0 34 34" fill="none" stroke="var(--color-accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M17 3.2 30.5 10v14L17 30.8 3.5 24V10z"></path>
+      <path d="M3.5 10 17 16.8 30.5 10"></path>
+      <path d="M17 16.8V30.8"></path>
+      <path d="M11 20.2v4.4M17 22.6v4.4M23 20.2v4.4"></path>
+    </svg>
+    <span>Restaurant Bookkeeper <span class="sub">/ in a box</span></span>
+  </div>
+  <a class="navlink" href="/">Daybook</a>
+  <a class="navlink" href="/bank.html" aria-current="page">Bank</a>
+  <a class="navlink" href="/reports.html">Reports</a>
+  <a class="navlink" href="/ap.html">A/P &amp; Checks</a>
+  <a class="navlink" href="/ledger.html">Ledger</a>
+  <a class="navlink" href="/console.html">Imports</a>
+  <div class="spacer"></div>
+  <select id="locationPicker" class="btn" title="Switch location" hidden></select>
+</nav>
+
+<main>
+  <div id="gate" class="notice" hidden></div>
+
+  <div>
+    <div class="kicker">Bank ingestion queue</div>
+    <h1 style="font-size:32px; margin:6px 0 4px;">Bank Feeds</h1>
+    <p class="muted" style="margin:0; max-width:640px;">Import your bank statement for <strong data-location-name>the active location</strong>. Deposits auto-match to clearing accounts and post; check withdrawals route to the check matcher; anything the rules can't identify parks below for review — never posted.</p>
+  </div>
+
+  <!-- last import summary -->
+  <div class="grid-4" id="summaryCards" hidden>
+    <div class="card kpi"><div class="kicker">Deposits matched</div><div class="fig tnum" id="sumDeposits">—</div><div class="meta muted">posted to the ledger</div></div>
+    <div class="card kpi"><div class="kicker">Checks routed</div><div class="fig tnum" id="sumChecks">—</div><div class="meta muted" id="sumChecksMeta">to the check matcher</div></div>
+    <div class="card kpi"><div class="kicker">Duplicates skipped</div><div class="fig tnum" id="sumDupes">—</div><div class="meta muted">safe to re-import</div></div>
+    <div class="card kpi"><div class="kicker">Parked unmatched</div><div class="fig tnum" id="sumUnmatched">—</div><div class="meta muted">need review below</div></div>
+  </div>
+
+  <section class="card" style="gap:12px;">
+    <div>
+      <div class="kicker">Step 1</div>
+      <h2 style="font-size:20px;">Import a bank statement</h2>
+      <p class="muted" style="margin:4px 0 0;">CSV header: <code>txn_date,description,amount,fee_amount,bank_account_id</code> · amount &gt; 0 = deposit, &lt; 0 = withdrawal · <code>fee_amount</code> isolates merchant fees on net card settlements · blank <code>bank_account_id</code> → primary. Re-imports dedupe silently.</p>
+    </div>
+    <textarea id="feedCsv" placeholder="txn_date,description,amount,fee_amount,bank_account_id
+2026-07-30,VISA MERCH SETTLEMENT,1250.00,36.25,
+2026-07-30,CHECK #1041,-482.19,,
+2026-07-31,NIGHT DEPOSIT,900.00,,"></textarea>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="feedBtn">Import statement</button>
+      <span class="muted" style="font-size:12px;">Runs deposit matching + check matching in one pass.</span>
+    </div>
+    <div id="feedDisclaimer"></div>
+    <div id="feedErrors"></div>
+    <pre class="out" id="feedOut" hidden></pre>
+  </section>
+
+  <section class="card" style="gap:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap;">
+      <div>
+        <div class="kicker">Step 2</div>
+        <h2 style="font-size:20px;">Unmatched queue</h2>
+        <p class="muted" style="margin:4px 0 0;">Bank lines the routing rules couldn't identify. They are parked — never posted. Post the correct journal entry on the <a href="/ledger.html">Ledger tab</a>, or fix the description and re-import.</p>
+      </div>
+      <button class="btn btn-sm no-print" id="refreshBtn">Refresh</button>
+    </div>
+    <table class="table tnum">
+      <thead><tr><th>Date</th><th>Description</th><th>Bank account</th><th class="amount">Amount</th></tr></thead>
+      <tbody id="queueBody"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="card" style="gap:12px;">
+    <div>
+      <div class="kicker">Also here</div>
+      <h2 style="font-size:20px;">Cleared checks (bank CSV)</h2>
+      <p class="muted" style="margin:4px 0 0;">If your bank exports cleared checks separately, import them here. Header: <code>check_number,cleared_date,cleared_amount,description,routing_number,account_number_last4,bank_account_id</code>. Matching against the <a href="/ap.html">check register</a> runs automatically.</p>
+    </div>
+    <textarea id="clearedCsv" style="min-height:110px;" placeholder="check_number,cleared_date,cleared_amount,description,routing_number,account_number_last4,bank_account_id"></textarea>
+    <div class="toolbar">
+      <button class="btn btn-primary" id="clearedBtn">Import cleared checks + match</button>
+    </div>
+    <div id="clearedDisclaimer"></div>
+    <div id="clearedErrors"></div>
+    <pre class="out" id="clearedOut" hidden></pre>
+  </section>
+</main>
+
+<script src="/ui.js"></script>
+<script>
+'use strict';
+
+async function loadQueue() {
+  let data = null;
+  try {
+    const r = await api('/api/bank/feed');
+    if (r.ok) data = await r.json();
+  } catch { /* gate shown */ }
+  const body = $('queueBody');
+  if (!data) {
+    body.innerHTML = '<tr><td colspan="4" class="muted">Queue unavailable — sign in with an active workspace.</td></tr>';
+    return;
+  }
+  const rows = data.unmatched || [];
+  $('sumUnmatched').textContent = rows.length;
+  body.innerHTML = rows.length === 0
+    ? '<tr><td colspan="4" class="muted">Queue is clear — every bank line matched. ✦</td></tr>'
+    : rows.map((u) =>
+        '<tr><td>' + esc(u.txnDate) + '</td><td>' + esc(u.description) + '</td><td class="muted">' + esc(u.bankAccountId) +
+        '</td><td class="amount">' + money(u.amount) + '</td></tr>').join('');
+}
+
+$('feedBtn').onclick = async () => {
+  $('feedErrors').innerHTML = '';
+  $('feedOut').hidden = true;
+  const res = await callWithAck('bank_import', 'feedDisclaimer', (h) =>
+    api('/api/bank/feed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...h },
+      body: JSON.stringify({ csv: $('feedCsv').value }),
+    }).catch(() => null));
+  if (!res) return;
+  const j = await res.json();
+  if (!res.ok) return showErrors('feedErrors', j);
+
+  $('summaryCards').hidden = false;
+  $('sumDeposits').textContent = j.depositsMatched ?? 0;
+  $('sumChecks').textContent = j.checksRouted ?? 0;
+  if (j.checkMatching) {
+    $('sumChecksMeta').textContent = j.checkMatching.matched + ' matched · ' +
+      j.checkMatching.amountMismatches + ' mismatch · ' + j.checkMatching.missingFromRegister + ' unregistered';
+  }
+  $('sumDupes').textContent = j.duplicates ?? 0;
+  $('sumUnmatched').textContent = (j.unmatched || []).length;
+  loadQueue();
+};
+
+$('clearedBtn').onclick = async () => {
+  $('clearedErrors').innerHTML = '';
+  $('clearedOut').hidden = true;
+  const res = await callWithAck('manual_import', 'clearedDisclaimer', (h) =>
+    api('/api/bank/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...h },
+      body: JSON.stringify({ csv: $('clearedCsv').value }),
+    }).catch(() => null));
+  if (!res) return;
+  const j = await res.json();
+  if (!res.ok) return showErrors('clearedErrors', j);
+  $('clearedOut').hidden = false;
+  $('clearedOut').textContent =
+    j.linesImported + ' cleared line' + (j.linesImported === 1 ? '' : 's') + ' imported · ' +
+    j.duplicateLinesSkipped + ' duplicate' + (j.duplicateLinesSkipped === 1 ? '' : 's') + ' skipped\n' +
+    'Matching: ' + j.matched + ' cleared · ' + j.amountMismatches + ' amount mismatch · ' +
+    j.missingFromRegister + ' missing from register';
+};
+
+$('refreshBtn').onclick = loadQueue;
+initWorkspace();
+loadQueue();
+initGuide('bank');
+</script>
+</body>
+</html>
