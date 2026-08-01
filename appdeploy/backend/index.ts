@@ -141,6 +141,21 @@ const CATEGORY_ROUTES: Array<[string[], string]> = [
     [['packaged', 'bottle', 'beverage', 'beer'], 'Beverage Cost - Packaged & Retail'],
     [['paper', 'box', 'packaging', 'napkin', 'cup', 'to-go'], 'Paper & Packaging Cost']
 ];
+const DEPOSIT_ROUTES: Array<[string[], string]> = [
+    [['visa'], 'Visa Clearing Account'],
+    [['mastercard', 'master card'], 'Mastercard Clearing Account'],
+    [['amex', 'american express'], 'Amex Clearing Account'],
+    [['discover'], 'Discover Clearing Account'],
+    [['doordash', 'ubereats', 'uber eats', 'grubhub'], 'Delivery Payout Clearing'],
+    [['safe drop', 'night deposit', 'cash deposit'], 'Cash Drawer'],
+    [['card', 'pos ', 'merchant', 'settlement', 'sq *', 'square', 'toast', 'clover'], 'Other Tender Clearing']
+];
+function routeDeposit(description: string): string | null {
+    const d = (description || '').toLowerCase();
+    for (const [keys, account] of DEPOSIT_ROUTES) if (keys.some((k) => d.includes(k))) return account;
+    return null;
+}
+
 function routeCategory(category: string): string {
     const c = (category || '').toLowerCase();
     for (const [keys, account] of CATEGORY_ROUTES) if (keys.some((k) => c.includes(k))) return account;
@@ -274,6 +289,85 @@ export const handler = router({
         const netIncomeToDate = cents(sum(rows.filter((r) => r.type === 'revenue')) - sum(rows.filter((r) => r.type === 'cogs')) - sum(rows.filter((r) => r.type === 'expense')));
         const totalAssets = sum(assets), totalLiabilities = sum(liabilities), totalEquity = cents(sum(equity) + netIncomeToDate);
         return json({ asOf, assets, liabilities, equity, netIncomeToDate, totals: { assets: totalAssets, liabilities: totalLiabilities, equity: totalEquity, liabilitiesAndEquity: cents(totalLiabilities + totalEquity) }, balanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01 });
+    }],
+    'POST /api/bank/import': [async ({ body }) => {
+        const { csv, ack } = (body || {}) as { csv?: string; ack?: boolean };
+        if (ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
+        if (!csv || typeof csv !== 'string') return error('csv is required', 400);
+        const rows = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
+        if (rows.length === 0) return error('empty file', 422);
+        if (rows[0].trim().toLowerCase() !== 'date,description,amount') return error('header must be exactly: date,description,amount', 422);
+        const existing = await listAll('bank_lines');
+        const seen = new Set(existing.map((x) => x.txnDate + '|' + x.description + '|' + x.amount));
+        let depositsMatched = 0, queuedForReview = 0, duplicates = 0, badRows = 0;
+        for (let i = 1; i < rows.length; i++) {
+            const cols = rows[i].split(',');
+            if (cols.length < 3) { badRows++; continue; }
+            const txnDate = cols[0].trim();
+            const amount = Number(cols[cols.length - 1].trim());
+            const description = cols.slice(1, cols.length - 1).join(',').trim();
+            if (!DATE_RE.test(txnDate) || !Number.isFinite(amount) || amount === 0 || !description) { badRows++; continue; }
+            const amt = cents(amount);
+            const key = txnDate + '|' + description + '|' + amt;
+            if (seen.has(key)) { duplicates++; continue; }
+            seen.add(key);
+            const [id] = await db.add('bank_lines', [{ txnDate, description, amount: amt, status: 'review', createdAt: Date.now() }]);
+            if (!id) { badRows++; continue; }
+            const clearing = amt > 0 ? routeDeposit(description) : null;
+            if (clearing) {
+                const posted = await postEntry({ journalNo: 'BK-' + id, entryDate: txnDate, description: 'Bank deposit match: ' + description, source: 'bank_import', lines: [{ accountName: 'Cash - General', debit: amt, credit: 0 }, { accountName: clearing, debit: 0, credit: amt }] });
+                if (posted.ok) {
+                    await db.update('bank_lines', [{ id, record: { txnDate, description, amount: amt, status: 'matched', matchedAccount: clearing, journalNo: 'BK-' + id, createdAt: Date.now() } }]);
+                    depositsMatched++;
+                    continue;
+                }
+            }
+            queuedForReview++;
+        }
+        return json({ depositsMatched, queuedForReview, duplicates, badRows });
+    }],
+    'GET /api/bank/queue': [async () => {
+        const all = await listAll('bank_lines');
+        const queue = all.filter((x) => x.status === 'review').sort((a, b) => (String(a.txnDate) < String(b.txnDate) ? -1 : 1));
+        const accounts = await ensureCoa();
+        const parents = new Set(accounts.filter((a) => a.parentAccountNo).map((a) => a.parentAccountNo));
+        const postable = accounts.filter((a) => a.active && !parents.has(a.accountNo)).map((a) => ({ accountNo: a.accountNo, name: a.name, type: a.type })).sort((x, y) => (x.accountNo < y.accountNo ? -1 : 1));
+        return json({ queue, accounts: postable });
+    }],
+    'POST /api/bank/categorize': [async ({ body }) => {
+        const { id, accountName, ack } = (body || {}) as { id?: string; accountName?: string; ack?: boolean };
+        if (ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
+        if (!id || !accountName) return error('id and accountName are required', 400);
+        const [line] = await db.get('bank_lines', [id]);
+        if (!line) return error('bank line not found', 404);
+        if (line.status !== 'review') return error('line already handled', 409);
+        const amt = cents(Math.abs(Number(line.amount)));
+        const isDeposit = Number(line.amount) > 0;
+        const jl: JLine[] = isDeposit
+            ? [{ accountName: 'Cash - General', debit: amt, credit: 0 }, { accountName, debit: 0, credit: amt }]
+            : [{ accountName, debit: amt, credit: 0 }, { accountName: 'Cash - General', debit: 0, credit: amt }];
+        const posted = await postEntry({ journalNo: 'BK-' + id, entryDate: String(line.txnDate), description: (isDeposit ? 'Bank deposit: ' : 'Bank expense: ') + line.description, source: 'bank_import', lines: jl });
+        if (!posted.ok) return error(posted.message || 'posting failed', 422);
+        await db.update('bank_lines', [{ id, record: { ...line, status: 'posted', matchedAccount: accountName, journalNo: 'BK-' + id } }]);
+        return json({ posted: true, journalNo: 'BK-' + id });
+    }],
+    'POST /api/bank/ignore': [async ({ body }) => {
+        const { id } = (body || {}) as { id?: string };
+        if (!id) return error('id is required', 400);
+        const [line] = await db.get('bank_lines', [id]);
+        if (!line) return error('bank line not found', 404);
+        if (line.status !== 'review') return error('line already handled', 409);
+        await db.update('bank_lines', [{ id, record: { ...line, status: 'ignored' } }]);
+        return json({ ignored: true });
+    }],
+    'GET /api/ledger/journal': [async ({ query }) => {
+        const from = query.from && DATE_RE.test(query.from) ? query.from : '0000-01-01';
+        const to = query.to && DATE_RE.test(query.to) ? query.to : '9999-12-31';
+        const entries = await listAll('journal_entries');
+        const inRange = entries
+            .filter((e) => String(e.entryDate) >= from && String(e.entryDate) <= to)
+            .sort((a, b) => (String(a.entryDate) < String(b.entryDate) ? -1 : String(a.entryDate) > String(b.entryDate) ? 1 : String(a.journalNo) < String(b.journalNo) ? -1 : 1));
+        return json({ from, to, count: inRange.length, entries: inRange.map((e) => ({ journalNo: e.journalNo, entryDate: e.entryDate, description: e.description, source: e.source, lines: e.lines })) });
     }],
     'GET /api/daybook': [async ({ query }) => {
         const from = query.from && DATE_RE.test(query.from) ? query.from : '0000-01-01';
