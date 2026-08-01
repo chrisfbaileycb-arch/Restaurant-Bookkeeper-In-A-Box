@@ -1,0 +1,25 @@
+# Tests
+## Test 1 - Landing page loads at root [sanity]
+Viewport: desktop
+Description: The root route shows the landing page with navigation tabs, not the scanner.
+Steps:
+1. Navigate to the app
+2. Wait for the page to fully load
+3. Look for the header brand and the navigation tabs
+Expected: The 'Restaurant Bookkeeper' header with 'Home', 'Daybook', 'Bank', 'Reports', and 'Invoice Scanner' tabs is visible, plus landing cards for the Daybook and the Invoice Scanner; no disclaimer card is shown on the landing page.
+## Test 2 - Scan control gated until consent
+Viewport: mobile
+Description: On the scanner tab, the scan control stays disabled until the disclaimer checkbox is checked (guardrail).
+Steps:
+1. Navigate to the app, wait for load, and tap the 'Invoice Scanner' tab
+2. Observe the 'Choose invoice photo' control before checking anything
+3. Check the 'I understand and accept' checkbox
+Expected: Before checking, the 'Choose invoice photo' control appears disabled (grey, not-allowed cursor); after checking, it appears enabled with gold styling.
+## Test 3 - Recent scans section renders on scanner tab
+Viewport: desktop
+Description: The scanner tab's history section renders, showing either stored scans or the empty state.
+Steps:
+1. Navigate to the app
+2. Wait for the page to fully load
+3. Open the 'Invoice Scanner' tab and scroll to the 'Recent scans' section
+Expected: The 'Recent scans' heading is visible with either a list of scanned invoices or the text 'No scans yet.'
