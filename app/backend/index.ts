@@ -358,6 +358,107 @@ function buildPayrollEntries(run: Record<string, any>): JEntry[] {
     return entries;
 }
 
+// ── POS daily-summary CSV import (ported from legacy lib/possummary.js) ──
+// Meets operators where they are: Toast/Clover/Square daily summary exports
+// normalize into one canonical contract with REAL category splits (no hardcoded
+// food/beverage ratios). Copy-paste the CSV from your POS export — no API keys.
+const POS_SUMMARY_CSV_HEADER = 'source_pos,business_date,food_sales,beverage_sales,sales_tax,cc_tips,cash_drops,gift_cards,processing_fees,actual_cash_drop';
+const POS_SOURCES = ['Toast', 'Clover', 'Square', 'Other'];
+const POS_NUM_FIELDS = ['foodSales', 'beverageSales', 'salesTax', 'ccTips', 'cashDrops', 'giftCards', 'processingFees'] as const;
+
+function parsePosSummaryCsv(csv: string) {
+    const errors: Array<{ line: number; message: string }> = [];
+    const lines = csv.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length === 0) return { ok: false as const, errors: [{ line: 0, message: 'empty_file' }] };
+    if (lines[0].trim() !== POS_SUMMARY_CSV_HEADER) {
+        return { ok: false as const, errors: [{ line: 1, message: 'header_mismatch: expected "' + POS_SUMMARY_CSV_HEADER + '"' }] };
+    }
+    const rows: Array<Record<string, any>> = [];
+    const seen = new Set<string>();
+    for (let i = 1; i < lines.length; i++) {
+        const cols = splitCsvLine(lines[i]).map((c) => c.trim());
+        if (cols.length !== 10) { errors.push({ line: i + 1, message: 'column_count_mismatch: expected 10' }); continue; }
+        const row: Record<string, any> = {
+            sourcePos: cols[0], businessDate: cols[1],
+            foodSales: Number(cols[2]), beverageSales: Number(cols[3]), salesTax: Number(cols[4]),
+            ccTips: Number(cols[5]), cashDrops: Number(cols[6]), giftCards: Number(cols[7]),
+            processingFees: Number(cols[8] === '' ? 0 : cols[8]),
+            actualCashDrop: cols[9] === '' ? null : Number(cols[9])
+        };
+        if (!POS_SOURCES.includes(row.sourcePos)) errors.push({ line: i + 1, message: 'source_pos must be one of ' + POS_SOURCES.join('|') });
+        if (!DATE_RE.test(row.businessDate)) errors.push({ line: i + 1, message: 'business_date must be YYYY-MM-DD' });
+        const key = row.sourcePos + '/' + row.businessDate;
+        if (seen.has(key)) errors.push({ line: i + 1, message: 'duplicate source_pos/business_date in file: ' + key });
+        seen.add(key);
+        for (const f of POS_NUM_FIELDS) {
+            if (!Number.isFinite(row[f]) || row[f] < 0) errors.push({ line: i + 1, message: f + ' must be a nonnegative number' });
+        }
+        if (row.actualCashDrop !== null && (!Number.isFinite(row.actualCashDrop) || row.actualCashDrop < 0)) {
+            errors.push({ line: i + 1, message: 'actual_cash_drop must be a nonnegative number when present' });
+        }
+        if (POS_NUM_FIELDS.every((f) => Number.isFinite(row[f]))) {
+            const collected = cents(row.foodSales + row.beverageSales + row.salesTax + row.ccTips + row.giftCards);
+            if (collected <= 0) errors.push({ line: i + 1, message: 'nothing collected — all amounts zero' });
+            const cardGross = cents(collected - row.cashDrops);
+            if (cardGross < 0) errors.push({ line: i + 1, message: 'cash_drops exceeds total collected' });
+            if (row.processingFees > 0 && row.processingFees > cardGross) {
+                errors.push({ line: i + 1, message: 'processing_fees exceeds card collections' });
+            }
+        }
+        rows.push(row);
+    }
+    if (errors.length > 0) return { ok: false as const, errors };
+    return { ok: true as const, rows };
+}
+
+function buildPosSummaryEntry(row: Record<string, any>): JEntry {
+    const desc = row.sourcePos + ' daily summary ' + row.businessDate;
+    const collected = cents(row.foodSales + row.beverageSales + row.salesTax + row.ccTips + row.giftCards);
+    const cardGross = cents(collected - row.cashDrops);
+    const actualCash = row.actualCashDrop ?? row.cashDrops;
+    const overShort = cents(actualCash - row.cashDrops);
+    const lines: JLine[] = [
+        ...(actualCash > 0 ? [{ accountName: 'Cash Drawer', debit: cents(actualCash), credit: 0, description: 'Cash collected — ' + desc }] : []),
+        ...(cardGross > 0 ? [{ accountName: 'Other Tender Clearing', debit: cents(cardGross - row.processingFees), credit: 0, description: 'Card collections — ' + desc }] : []),
+        ...(row.processingFees > 0 ? [{ accountName: 'POS and Software Fees', debit: cents(row.processingFees), credit: 0, description: 'Processing fees — ' + desc }] : []),
+        ...(overShort < 0 ? [{ accountName: 'Cash Over/Short', debit: cents(-overShort), credit: 0, description: 'Drawer short — ' + desc }] : []),
+        ...(row.foodSales > 0 ? [{ accountName: 'Food Sales', debit: 0, credit: cents(row.foodSales), description: desc }] : []),
+        ...(row.beverageSales > 0 ? [{ accountName: 'Beverage Sales', debit: 0, credit: cents(row.beverageSales), description: desc }] : []),
+        ...(row.salesTax > 0 ? [{ accountName: 'Sales Tax Payable - CO', debit: 0, credit: cents(row.salesTax), description: 'Sales tax — ' + desc }] : []),
+        ...(row.ccTips > 0 ? [{ accountName: 'Tips Payable', debit: 0, credit: cents(row.ccTips), description: 'Card tips — ' + desc }] : []),
+        ...(row.giftCards > 0 ? [{ accountName: 'Gift Card Liability', debit: 0, credit: cents(row.giftCards), description: 'Gift cards activated — ' + desc }] : []),
+        ...(overShort > 0 ? [{ accountName: 'Cash Over/Short', debit: 0, credit: cents(overShort), description: 'Drawer over — ' + desc }] : [])
+    ];
+    return { journalNo: 'DSUM-' + row.sourcePos + '-' + row.businessDate, entryDate: row.businessDate, description: desc, source: 'pos_summary', lines };
+}
+
+// ── Physical inventory (ported from legacy lib/inventory.js) ──
+// The operator counts what is actually on the shelf; the ledger says what
+// should be there. The variance posts to a dedicated COGS adjustment account.
+const INVENTORY_CATEGORIES = [
+    { key: 'food', inventoryAccount: 'Inventory - Food', adjustmentAccount: 'Food Cost - Inventory Adjustment' },
+    { key: 'beverage', inventoryAccount: 'Inventory - Beverage', adjustmentAccount: 'Beverage Cost - Inventory Adjustment' },
+    { key: 'paper', inventoryAccount: 'Inventory - Paper & Packaging', adjustmentAccount: 'Paper & Packaging Cost' }
+];
+
+function buildInventoryEntry(countDate: string, items: Array<{ inventoryAccount: string; adjustmentAccount: string; ledgerBalance: number; physicalCount: number }>): JEntry | null {
+    const lines: JLine[] = [];
+    for (const it of items) {
+        const variance = cents(it.ledgerBalance - it.physicalCount);
+        if (variance === 0) continue;
+        const desc = 'Physical count ' + countDate + ' — ' + it.inventoryAccount;
+        if (variance > 0) {
+            lines.push({ accountName: it.adjustmentAccount, debit: variance, credit: 0, description: desc });
+            lines.push({ accountName: it.inventoryAccount, debit: 0, credit: variance, description: desc });
+        } else {
+            lines.push({ accountName: it.inventoryAccount, debit: -variance, credit: 0, description: desc });
+            lines.push({ accountName: it.adjustmentAccount, debit: 0, credit: -variance, description: desc });
+        }
+    }
+    if (lines.length === 0) return null;
+    return { journalNo: 'INV-' + countDate, entryDate: countDate, description: 'Periodic physical inventory adjustment', source: 'inventory_count', lines };
+}
+
 // ── Compliance calendar (ported) ──
 // CO + federal filing deadlines; estimated amounts come live from the
 // location's liability balances as of each period end — no tax rates are
@@ -409,13 +510,41 @@ function usDate(isoDate: string): string {
     const [y, m, d] = isoDate.split('-');
     return m + '/' + d + '/' + y;
 }
-function toQboJournalCsv(entries: Array<Record<string, any>>): string {
-    const lines = ['Journal No.,Journal Date,Account Name,Description,Debits,Credits'];
+/** Map journal source to a QuickBooks Class/Department for proper categorization. */
+function qbClass(source: string): string {
+    if (source === 'daily_sales' || source === 'pos_summary') return 'Sales';
+    if (source === 'delivery_import') return 'Delivery';
+    if (source === 'payroll_import') return 'Labor';
+    if (source === 'ap_scan' || source === 'ap_payment') return 'Cost of Goods';
+    if (source === 'bank_import') return 'Operations';
+    if (source === 'inventory_count') return 'Inventory';
+    return 'General';
+}
+
+/** Map account type to a QuickBooks-friendly category for reporting. */
+function qbCategory(accountName: string, accounts: Array<Record<string, any>>): string {
+    const acct = accounts.find((a) => String(a.name).toLowerCase() === accountName.toLowerCase());
+    if (!acct) return '';
+    if (acct.type === 'revenue') return 'Income';
+    if (acct.type === 'cogs') return 'COGS';
+    if (acct.type === 'expense') return 'Expense';
+    if (acct.type === 'asset') return 'Asset';
+    if (acct.type === 'liability') return 'Liability';
+    if (acct.type === 'equity') return 'Equity';
+    return '';
+}
+
+function toQboJournalCsv(entries: Array<Record<string, any>>, accounts?: Array<Record<string, any>>): string {
+    const accts = accounts || [];
+    const lines = ['Journal No.,Journal Date,Account Name,Description,Debits,Credits,Class,Category'];
     for (const e of entries) {
+        const cls = qbClass(String(e.source || ''));
         for (const l of (e.lines || []) as JLine[]) {
+            const cat = qbCategory(l.accountName, accts);
             lines.push([
                 csvEsc(e.journalNo), usDate(String(e.entryDate)), csvEsc(l.accountName), csvEsc(l.description || e.description),
-                l.debit > 0 ? Number(l.debit).toFixed(2) : '', l.credit > 0 ? Number(l.credit).toFixed(2) : ''
+                l.debit > 0 ? Number(l.debit).toFixed(2) : '', l.credit > 0 ? Number(l.credit).toFixed(2) : '',
+                csvEsc(cls), csvEsc(cat)
             ].join(','));
         }
     }
@@ -854,6 +983,65 @@ export const handler = router({
         }
         return json({ taxType: b.tax_type, periodEnd: b.period_end, status });
     }],
+    'POST /api/pos/daily-summary': [async ({ body }) => {
+        const b = (body || {}) as { csv?: string; ack?: boolean; location_id?: string };
+        if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
+        if (!b.csv || typeof b.csv !== 'string') return error('csv is required', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
+        const parsed = parsePosSummaryCsv(b.csv);
+        if (!parsed.ok) return error('strict_validation_failed: ' + parsed.errors.map((e) => 'line ' + e.line + ': ' + e.message).join('; '), 422);
+        let entriesPosted = 0, entriesSkipped = 0;
+        for (const row of parsed.rows) {
+            const entry = buildPosSummaryEntry(row);
+            const posted = await postEntry(entry, locId, defId);
+            if (posted.ok) entriesPosted++;
+            else if ((posted.message || '').includes('already posted')) entriesSkipped++;
+            else return error(posted.message || 'posting failed for ' + entry.journalNo, 422);
+        }
+        return json({ days: parsed.rows.length, entriesPosted, entriesSkipped });
+    }],
+    'GET /api/pos/summaries': [async ({ query }) => {
+        const { locId, defId } = await resolveLoc(query.location);
+        const entries = await locEntries(locId, defId);
+        const summaries = entries.filter((e) => e.source === 'pos_summary').sort((a, b) => (String(a.entryDate) > String(b.entryDate) ? -1 : 1));
+        return json({ summaries: summaries.slice(0, 60).map((e) => ({ journalNo: e.journalNo, date: e.entryDate, description: e.description })) });
+    }],
+    'POST /api/inventory/count': [async ({ body }) => {
+        const b = (body || {}) as { count_date?: string; food_count?: number | null; beverage_count?: number | null; paper_count?: number | null; ack?: boolean; location_id?: string };
+        if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
+        if (!b.count_date || !DATE_RE.test(b.count_date)) return error('count_date must be YYYY-MM-DD', 400);
+        const { locId, defId } = await resolveLoc(b.location_id);
+        const existing = (await listAll('inventory_counts')).filter((c) => inLoc(c, locId, defId) && c.countDate === b.count_date);
+        if (existing.length > 0) return error('count already recorded for this date', 409);
+        const items: Array<{ inventoryAccount: string; adjustmentAccount: string; ledgerBalance: number; physicalCount: number }> = [];
+        const variances: Record<string, number> = {};
+        const asOf = b.count_date;
+        const balances = await accountBalances('0000-01-01', asOf, locId, defId);
+        for (const cat of INVENTORY_CATEGORIES) {
+            const raw = (b as Record<string, any>)[cat.key + '_count'];
+            if (raw === undefined || raw === null) continue;
+            const physical = cents(Number(raw));
+            if (!Number.isFinite(physical) || physical < 0) return error(cat.key + '_count must be a nonnegative number', 400);
+            const acctRow = balances.find((r) => r.name === cat.inventoryAccount);
+            const ledgerBalance = acctRow ? acctRow.balance : 0;
+            items.push({ ...cat, ledgerBalance, physicalCount: physical });
+            variances[cat.key] = cents(ledgerBalance - physical);
+        }
+        if (items.length === 0) return error('at least one count (food_count, beverage_count, or paper_count) is required', 400);
+        const entry = buildInventoryEntry(b.count_date, items);
+        if (entry) {
+            const posted = await postEntry(entry, locId, defId);
+            if (!posted.ok) return error(posted.message || 'posting failed', 422);
+        }
+        await db.add('inventory_counts', [{ countDate: b.count_date, variances, adjusted: entry !== null, locationId: locId, createdAt: Date.now() }]);
+        return json({ countDate: b.count_date, adjusted: entry !== null, variances });
+    }],
+    'GET /api/inventory/counts': [async ({ query }) => {
+        const { locId, defId } = await resolveLoc(query.location);
+        const counts = (await listAll('inventory_counts')).filter((c) => inLoc(c, locId, defId));
+        counts.sort((a, b) => (String(a.countDate) > String(b.countDate) ? -1 : 1));
+        return json({ counts: counts.slice(0, 30).map((c) => ({ countDate: c.countDate, variances: c.variances || {}, adjusted: c.adjusted })) });
+    }],
     'GET /api/export/qbo-journal': [async ({ query }) => {
         if (query.ack !== 'true') return error('disclaimer_acknowledgement_required: You are exporting business records assembled by an autonomous pipeline. Verify totals before accounting use.', 428);
         const month = query.month;
@@ -863,7 +1051,8 @@ export const handler = router({
         if (entries.length === 0) return error('no ledger entries for ' + month, 404);
         const lineCount = entries.reduce((n, e) => n + ((e.lines || []) as JLine[]).length, 0);
         if (lineCount > 1000) return error('QBO journal imports cap at 1,000 lines (this month has ' + lineCount + '); split the month or export IIF.', 422);
-        return json({ filename: 'qbo-journal-' + month + '.csv', mimeType: 'text/csv', lines: lineCount, content: toQboJournalCsv(entries) });
+        const accounts = await ensureCoa();
+        return json({ filename: 'qbo-journal-' + month + '.csv', mimeType: 'text/csv', lines: lineCount, content: toQboJournalCsv(entries, accounts) });
     }],
     'GET /api/export/iif': [async ({ query }) => {
         if (query.ack !== 'true') return error('disclaimer_acknowledgement_required: You are exporting business records assembled by an autonomous pipeline. Verify totals before accounting use.', 428);

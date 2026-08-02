@@ -743,6 +743,155 @@ function Ap() {
     );
 }
 
+// ── POS daily-summary import (copy-paste CSV from Toast/Clover/Square) ──
+function PosSummary() {
+    const [csv, setCsv] = useState('');
+    const [ack, setAck] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState('');
+    const [err, setErr] = useState('');
+    const [history, setHistory] = useState<Array<Record<string, any>>>([]);
+
+    function refresh() { lapi.get('/api/pos/summaries').then((r) => setHistory(r.data.summaries || [])).catch(() => {}); }
+    useEffect(refresh, []);
+
+    async function importCsv() {
+        if (!ack || busy || !csv.trim()) return;
+        setBusy(true); setErr(''); setMsg('');
+        try {
+            const r = await lapi.post('/api/pos/daily-summary', { ack: true, csv });
+            setMsg(r.data.days + ' day' + (r.data.days === 1 ? '' : 's') + ' imported: ' + r.data.entriesPosted + ' posted' + (r.data.entriesSkipped ? ', ' + r.data.entriesSkipped + ' already on books (skipped)' : '') + '.');
+            setCsv(''); refresh();
+        } catch (e) { setErr((e as { message?: string }).message || 'Import failed'); }
+        finally { setBusy(false); }
+    }
+
+    return (
+        <main className='max-w-4xl mx-auto px-6 py-8 flex flex-col gap-6'>
+            <section className='border border-[#b68235] rounded p-4 bg-[#b68235]/5'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>Import POS daily summaries</div>
+                <p className='text-sm'>Copy-paste the daily summary CSV export from your POS system (Toast, Clover, Square, or Other). No API keys needed — just export the report and paste it here. One row per business date with real category splits. The header must be exactly:</p>
+                <p className='text-xs font-mono mt-1 opacity-80 break-all'>source_pos,business_date,food_sales,beverage_sales,sales_tax,cc_tips,cash_drops,gift_cards,processing_fees,actual_cash_drop</p>
+                <p className='text-sm mt-2'>The <span className='font-mono text-xs'>actual_cash_drop</span> column is optional (leave blank if you don&apos;t count the drawer). If present, the difference from expected cash posts to Cash Over/Short. Card collections debit Other Tender Clearing net of processing fees; the bank feed clears them later.</p>
+                <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'source_pos,business_date,food_sales,beverage_sales,sales_tax,cc_tips,cash_drops,gift_cards,processing_fees,actual_cash_drop\nToast,2026-08-01,4280.50,1120.00,378.04,620.00,1200.00,45.00,89.50,1195.00\nToast,2026-08-02,3950.00,980.00,345.10,540.00,1100.00,30.00,82.00,'} className='w-full mt-3 border border-[#e0ddd8] rounded p-2 text-xs font-mono bg-white min-h-[120px]' />
+                <label className='flex items-center gap-2 mt-2 text-sm cursor-pointer'>
+                    <input type='checkbox' checked={ack} onChange={(e) => setAck(e.target.checked)} className='accent-[#b68235]' />
+                    I have verified these figures against my POS daily reports
+                </label>
+                <div className='flex items-center gap-3 mt-3 flex-wrap'>
+                    <button onClick={importCsv} disabled={!ack || busy || !csv.trim()} className={ack && !busy && csv.trim() ? btnOn : btnOff}><Send size={15} />{busy ? 'Posting…' : 'Import + post to books'}</button>
+                    {msg && <span className='text-sm text-[#8a5f22] inline-flex items-center gap-1'><Check size={15} />{msg}</span>}
+                    {err && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{err}</span>}
+                </div>
+            </section>
+            <section>
+                <h2 className='text-lg mb-2'>Posted summaries <span className='text-sm opacity-60'>· newest first</span></h2>
+                {history.length === 0 ? <p className='text-sm opacity-60'>No POS summaries posted yet.</p> : (
+                    <ul className='divide-y divide-[#e0ddd8] border border-[#e0ddd8] rounded bg-white/60'>
+                        {history.map((h) => (
+                            <li key={h.journalNo} className='px-4 py-2 text-sm flex justify-between gap-3'>
+                                <span className='text-[#8a5f22]'>{h.journalNo}</span>
+                                <span className='tabular-nums opacity-60'>{h.date}</span>
+                                <span className='flex-1 min-w-0 opacity-70'>{h.description}</span>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </section>
+            <section className='border border-[#e0ddd8] rounded bg-white/40 p-4 text-sm opacity-80'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>How to get the CSV</div>
+                <p><strong>Toast:</strong> Reports → Sales Summary → Export CSV. Rearrange columns to match the header above.</p>
+                <p className='mt-1'><strong>Clover:</strong> Reports → Daily Summary → Download. Map columns to the format.</p>
+                <p className='mt-1'><strong>Square:</strong> Sales → Reports → Daily Summary → Export. Adjust column order.</p>
+                <p className='mt-1'>If your POS is not listed, use <span className='font-mono text-xs'>Other</span> as the source_pos value.</p>
+            </section>
+        </main>
+    );
+}
+
+// ── Physical inventory count ──
+function Inventory() {
+    const [countDate, setCountDate] = useState(iso(new Date()));
+    const [food, setFood] = useState('');
+    const [bev, setBev] = useState('');
+    const [paper, setPaper] = useState('');
+    const [ack, setAck] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState('');
+    const [err, setErr] = useState('');
+    const [history, setHistory] = useState<Array<Record<string, any>>>([]);
+
+    function refresh() { lapi.get('/api/inventory/counts').then((r) => setHistory(r.data.counts || [])).catch(() => {}); }
+    useEffect(refresh, []);
+
+    async function submit() {
+        if (!ack || busy) return;
+        setBusy(true); setErr(''); setMsg('');
+        try {
+            const body: Record<string, any> = { ack: true, count_date: countDate };
+            if (food.trim() !== '') body.food_count = Number(food);
+            if (bev.trim() !== '') body.beverage_count = Number(bev);
+            if (paper.trim() !== '') body.paper_count = Number(paper);
+            const r = await lapi.post('/api/inventory/count', body);
+            const v = r.data.variances || {};
+            const parts = Object.entries(v).filter(([, val]) => (val as number) !== 0).map(([k, val]) => k + ': ' + (val as number > 0 ? '+' : '') + money(val as number));
+            setMsg('Count recorded' + (r.data.adjusted ? ' — adjustment posted: ' + parts.join(', ') : ' — no variances, nothing to adjust.'));
+            setFood(''); setBev(''); setPaper(''); setAck(false);
+            refresh();
+        } catch (e) { setErr((e as { message?: string }).message || 'Count failed'); }
+        finally { setBusy(false); }
+    }
+
+    return (
+        <main className='max-w-3xl mx-auto px-6 py-8 flex flex-col gap-6'>
+            <section className='border border-[#b68235] rounded p-4 bg-[#b68235]/5'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>Record physical inventory count</div>
+                <p className='text-sm'>Count what is actually on the shelf. The system compares your count to the ledger balance (beginning inventory + purchases) and posts any variance to a dedicated COGS adjustment account. Shrink and waste stay visible separately from purchases. Leave a category blank to skip it.</p>
+                <div className='grid gap-3 sm:grid-cols-4 mt-3'>
+                    <label className='text-xs flex flex-col gap-1'><span className='opacity-70'>Count date</span><input type='date' value={countDate} onChange={(e) => setCountDate(e.target.value)} className='border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm tabular-nums' /></label>
+                    <label className='text-xs flex flex-col gap-1'><span className='opacity-70'>Food inventory ($)</span><input type='number' step='0.01' min='0' value={food} onChange={(e) => setFood(e.target.value)} placeholder='e.g. 4200.00' className='border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm tabular-nums' /></label>
+                    <label className='text-xs flex flex-col gap-1'><span className='opacity-70'>Beverage inventory ($)</span><input type='number' step='0.01' min='0' value={bev} onChange={(e) => setBev(e.target.value)} placeholder='e.g. 1800.00' className='border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm tabular-nums' /></label>
+                    <label className='text-xs flex flex-col gap-1'><span className='opacity-70'>Paper &amp; packaging ($)</span><input type='number' step='0.01' min='0' value={paper} onChange={(e) => setPaper(e.target.value)} placeholder='e.g. 350.00' className='border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm tabular-nums' /></label>
+                </div>
+                <label className='flex items-center gap-2 mt-3 text-sm cursor-pointer'>
+                    <input type='checkbox' checked={ack} onChange={(e) => setAck(e.target.checked)} className='accent-[#b68235]' />
+                    I have physically counted these items and verified the dollar values
+                </label>
+                <div className='flex items-center gap-3 mt-3 flex-wrap'>
+                    <button onClick={submit} disabled={!ack || busy} className={ack && !busy ? btnOn : btnOff}><Send size={15} />{busy ? 'Recording…' : 'Record count'}</button>
+                    {msg && <span className='text-sm text-[#8a5f22] inline-flex items-center gap-1'><Check size={15} />{msg}</span>}
+                    {err && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{err}</span>}
+                </div>
+            </section>
+            <section>
+                <h2 className='text-lg mb-2'>Count history <span className='text-sm opacity-60'>· newest first</span></h2>
+                {history.length === 0 ? <p className='text-sm opacity-60'>No counts recorded yet.</p> : (
+                    <div className='overflow-x-auto border border-[#e0ddd8] rounded bg-white/60'>
+                        <table className='text-sm w-full min-w-[500px]'>
+                            <thead><tr className='text-left text-[11px] uppercase tracking-wide opacity-60'><th className='px-3 py-2'>Date</th><th>Food var.</th><th>Bev. var.</th><th>Paper var.</th><th>Adjusted</th></tr></thead>
+                            <tbody>
+                                {history.map((c) => (
+                                    <tr key={c.countDate} className='border-t border-[#e0ddd8]'>
+                                        <td className='px-3 py-2 tabular-nums'>{c.countDate}</td>
+                                        <td className='tabular-nums'>{c.variances?.food != null ? money(c.variances.food) : '—'}</td>
+                                        <td className='tabular-nums'>{c.variances?.beverage != null ? money(c.variances.beverage) : '—'}</td>
+                                        <td className='tabular-nums'>{c.variances?.paper != null ? money(c.variances.paper) : '—'}</td>
+                                        <td>{c.adjusted ? '✓' : '—'}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </section>
+            <section className='border border-[#e0ddd8] rounded bg-white/40 p-4 text-sm opacity-80'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>How it works</div>
+                <p>Positive variance means the ledger shows more than the shelf (product was used or lost — COGS goes up, inventory goes down). Negative variance means the shelf has more than expected (COGS goes down). The adjustment posts to dedicated accounts so operational purchases stay separate from shrink/waste corrections.</p>
+            </section>
+        </main>
+    );
+}
+
 const GUIDE_KB: Array<{ keys: string[]; a: string }> = [
     { keys: ['bank', 'statement'], a: 'Bank CSV is exactly three columns: date,description,amount (dates YYYY-MM-DD; deposits positive, spending negative). Card settlements, delivery payouts, and cash deposits auto-match to clearing accounts; a withdrawal like CHECK #1041 clears a matching outstanding check; everything else waits in the review queue for you to categorize.' },
     { keys: ['scan', 'invoice', 'photo', 'ocr'], a: 'On the Invoice Scanner tab, photograph a supplier invoice and the AI extracts the line items - amounts it cannot read are flagged, never guessed. Review, then Post to books to record it as Accounts Payable.' },
@@ -756,7 +905,9 @@ const GUIDE_KB: Array<{ keys: string[]; a: string }> = [
     { keys: ['daily', 'sales', 'daybook'], a: 'Post each day of sales on the Daybook tab: food, beverage, tax, tips, cash, and processing fees become one balanced journal entry. That feeds cash, the P&L, and prime cost.' },
     { keys: ['p&l', 'profit', 'report', 'balance sheet', 'trial', 'journal', 'print'], a: 'Reports covers P&L, Balance Sheet, Trial Balance, and the General Journal. Use Print for a clean paper copy. The Balance Sheet self-checks: assets must equal liabilities + equity.' },
     { keys: ['prime', 'kpi', 'food cost', 'labor'], a: 'Prime cost = COGS + labor as a percent of revenue; the industry warning line is 65%. Food and beverage cost percentages compare each cost to its own sales line.' },
-    { keys: ['money', 'move', 'file', 'safe'], a: 'Recording only: this system never moves money and never files anything. Every posting needs your explicit confirmation, and AI-read amounts are flagged when uncertain - never guessed.' }
+    { keys: ['money', 'move', 'file', 'safe'], a: 'Recording only: this system never moves money and never files anything. Every posting needs your explicit confirmation, and AI-read amounts are flagged when uncertain - never guessed.' },
+    { keys: ['pos', 'toast', 'clover', 'square', 'daily summary', 'pos import'], a: 'The POS Import tab accepts daily summary CSVs from Toast, Clover, Square, or any POS. No API keys needed - just export the daily report and paste it. The header is: source_pos,business_date,food_sales,beverage_sales,sales_tax,cc_tips,cash_drops,gift_cards,processing_fees,actual_cash_drop. Each row posts a balanced journal entry splitting cash vs card, revenue by category, and liabilities.' },
+    { keys: ['inventory', 'count', 'shrink', 'waste', 'shelf', 'physical'], a: 'The Inventory tab records physical counts. Enter the dollar value on the shelf for food, beverage, and/or paper. The system compares to the ledger balance (beginning inventory + purchases) and posts any variance to a dedicated COGS adjustment account. Positive variance = shrink/waste (COGS up); negative = shelf has more than expected (COGS down). Adjustments stay separate from operational purchases.' }
 ];
 
 function Guide({ view }: { view: string }) {
@@ -792,13 +943,15 @@ function Guide({ view }: { view: string }) {
     const tips: Record<string, string> = {
         bank: 'Import a statement, then work the review queue to zero - unrecognized lines are parked, never posted.',
         ap: 'Watch the 31+ day bin. Recording a check payment also adds it to the register as outstanding.',
-        delivery: 'The payout identity is enforced on import - if a statement rejects, the platform’s own math does not reconcile.',
-        payroll: 'Import each pay run from your provider’s report. Liabilities left on the books feed the compliance calendar.',
+        delivery: 'The payout identity is enforced on import - if a statement rejects, the platform\'s own math does not reconcile.',
+        payroll: 'Import each pay run from your provider\'s report. Liabilities left on the books feed the compliance calendar.',
         compliance: 'Estimated amounts are live liability balances - post payroll and daily sales first, then trust these numbers.',
         reports: 'Pick a period, then Print gives you a clean paper copy. The QuickBooks bridge below exports one month at a time.',
         scanner: 'Photograph the whole invoice in good light; blurry amounts come back flagged, never guessed.',
         daybook: 'One balanced journal entry per business day - post it after close.',
-        home: 'Work left to right: Daybook, Bank, A/P, Delivery, Payroll, Reports, Compliance. Open me anytime for the closing checklist.'
+        'pos-summary': 'Export the daily summary CSV from your POS (Toast, Clover, Square) and paste it here. No API keys needed - just the numbers from your daily report.',
+        inventory: 'Count what is on the shelf and enter the dollar value. The system calculates the variance from the ledger and posts a COGS adjustment automatically.',
+        home: 'Work left to right: Daybook, POS Import, Bank, A/P, Delivery, Payroll, Inventory, Reports, Compliance. Open me anytime for the closing checklist.'
     };
     function ask(e: { preventDefault: () => void }) {
         e.preventDefault();
@@ -841,10 +994,12 @@ function App() {
         const h = window.location.hash;
         if (h === '#/scanner') return 'scanner';
         if (h === '#/daybook') return 'daybook';
+        if (h === '#/pos-summary') return 'pos-summary';
         if (h === '#/bank') return 'bank';
         if (h === '#/ap') return 'ap';
         if (h === '#/delivery') return 'delivery';
         if (h === '#/payroll') return 'payroll';
+        if (h === '#/inventory') return 'inventory';
         if (h === '#/compliance') return 'compliance';
         if (h === '#/reports') return 'reports';
         return 'home';
@@ -896,10 +1051,12 @@ function App() {
                 <nav className='flex items-center gap-4 ml-auto flex-wrap'>
                     <button className={tab(view === 'home')} onClick={() => go('home')} aria-current={view === 'home' ? 'page' : undefined}>Home</button>
                     <button className={tab(view === 'daybook')} onClick={() => go('daybook')} aria-current={view === 'daybook' ? 'page' : undefined}>Daybook</button>
+                    <button className={tab(view === 'pos-summary')} onClick={() => go('pos-summary')} aria-current={view === 'pos-summary' ? 'page' : undefined}>POS Import</button>
                     <button className={tab(view === 'bank')} onClick={() => go('bank')} aria-current={view === 'bank' ? 'page' : undefined}>Bank</button>
                     <button className={tab(view === 'ap')} onClick={() => go('ap')} aria-current={view === 'ap' ? 'page' : undefined}>A/P &amp; Checks</button>
                     <button className={tab(view === 'delivery')} onClick={() => go('delivery')} aria-current={view === 'delivery' ? 'page' : undefined}>Delivery</button>
                     <button className={tab(view === 'payroll')} onClick={() => go('payroll')} aria-current={view === 'payroll' ? 'page' : undefined}>Payroll</button>
+                    <button className={tab(view === 'inventory')} onClick={() => go('inventory')} aria-current={view === 'inventory' ? 'page' : undefined}>Inventory</button>
                     <button className={tab(view === 'reports')} onClick={() => go('reports')} aria-current={view === 'reports' ? 'page' : undefined}>Reports</button>
                     <button className={tab(view === 'compliance')} onClick={() => go('compliance')} aria-current={view === 'compliance' ? 'page' : undefined}>Compliance</button>
                     <button className={tab(view === 'scanner')} onClick={() => go('scanner')} aria-current={view === 'scanner' ? 'page' : undefined}>Invoice Scanner</button>
@@ -907,10 +1064,12 @@ function App() {
             </header>
             {view === 'home' ? <Home go={go} scanCount={scanCount} />
                 : view === 'daybook' ? <Daybook />
+                : view === 'pos-summary' ? <PosSummary />
                 : view === 'bank' ? <Bank />
                 : view === 'ap' ? <Ap />
                 : view === 'delivery' ? <Delivery />
                 : view === 'payroll' ? <Payroll />
+                : view === 'inventory' ? <Inventory />
                 : view === 'compliance' ? <Compliance />
                 : view === 'reports' ? <Reports />
                 : <Scanner />}
