@@ -41,8 +41,10 @@ function Home({ go, scanCount }: { go: (v: string) => void; scanCount: number })
         <main className='max-w-3xl mx-auto px-6 py-10 flex flex-col gap-8'>
             <section className='text-center flex flex-col items-center gap-3 py-6'>
                 <Crate size={56} />
-                <h2 className='text-3xl'>Bookkeeping built for restaurants — nothing else.</h2>
-                <p className='text-sm opacity-70 max-w-xl'>One clean, reconciled ledger from your POS, delivery platforms, vendor invoices, payroll reports, and bank feed — without the bloat of generic accounting software. Recording only: this system never moves money.</p>
+                <h2 className='text-3xl'>1st Bookkeeper-In-A-Box</h2>
+                <p className='text-xs font-semibold text-[#8a5f22] tracking-wide mt-1'>Specialized Ledger Intelligence</p>
+                <p className='text-sm opacity-70 max-w-xl mt-2'>Built for Restaurants, Salons &amp; Barbershops, Tattoo Studios, Auto Repair &amp; Service Businesses. <span className='italic'>(Expanding to your industry soon)</span></p>
+                <p className='text-sm opacity-70 max-w-xl'>One clean, reconciled ledger from your POS, vendor invoices, payroll reports, and bank feed — without the bloat of generic accounting software. Recording only: this system never moves money.</p>
             </section>
             <section className='grid gap-4 sm:grid-cols-2'>
                 <button onClick={() => go('daybook')} className='text-left border border-[#e0ddd8] rounded p-5 bg-white/60 hover:shadow-md transition-shadow flex flex-col gap-2'>
@@ -60,7 +62,7 @@ function Home({ go, scanCount }: { go: (v: string) => void; scanCount: number })
                 <Sparkles size={18} className='text-[#b68235] mt-0.5' />
                 <div>
                     <div className='text-[11px] tracking-widest uppercase font-semibold text-[#8a5f22]'>The whole box</div>
-                    <p className='text-sm mt-1 opacity-80'>Every module is live: bank matching with check clearing, A/P &amp; the check register, delivery reconciliation, payroll journals, printable reports with the QuickBooks bridge, and the Colorado + federal compliance calendar. Run more than one restaurant? Switch or add locations from the picker in the header — each keeps its own isolated books.</p>
+                    <p className='text-sm mt-1 opacity-80'>Every module is live: bank matching with check clearing, A/P &amp; the check register, delivery reconciliation, payroll journals, printable reports with the QuickBooks bridge, and the compliance calendar. Run more than one location? Switch or add from the picker in the header — each keeps its own isolated books with its own industry profile.</p>
                 </div>
             </section>
         </main>
@@ -165,7 +167,7 @@ function Bank() {
         if (!ack || busy || !csv.trim()) return;
         setBusy(true); setErr(''); setSum(null);
         try {
-            const r = await lapi.post('/api/bank/import', { ack: true, csv });
+            const r = await lapi.post('/api/bank/import-auto', { ack: true, csv });
             setSum(r.data); setCsv('');
             refresh();
         } catch (e) { setErr((e as { message?: string }).message || 'Import failed'); }
@@ -187,15 +189,15 @@ function Bank() {
         <main className='max-w-3xl mx-auto px-6 py-8 flex flex-col gap-6'>
             <section className='border border-[#b68235] rounded p-4 bg-[#b68235]/5'>
                 <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>Import bank activity</div>
-                <p className='text-sm'>Download a CSV from your bank, arrange it to exactly three columns — <span className='tabular-nums'>date,description,amount</span> (dates YYYY-MM-DD; deposits positive, spending negative) — and paste it here. Card settlements, delivery payouts, and cash deposits auto-match to clearing; a withdrawal like CHECK #1041 clears a matching outstanding check; everything else waits below for you to categorize. Re-imports skip duplicates.</p>
-                <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'date,description,amount\n2026-08-01,SYSCO DENVER PAYMENT,-1240.55\n2026-08-01,SQUARE INC DES:250801,1897.22'} className='w-full mt-3 border border-[#e0ddd8] rounded p-2 text-xs font-mono bg-white min-h-[120px]' />
+                <p className='text-sm'>Download a CSV from your bank and paste it here. Supported formats: <span className='tabular-nums'>date,description,amount</span> (simple) &middot; <span className='tabular-nums'>date,description,amount,fee_amount</span> (extended) &middot; Wells Fargo/Chase style with Debit/Credit columns. Dates can be YYYY-MM-DD or MM/DD/YYYY. Card settlements, delivery payouts, and cash deposits auto-match to clearing; CHECK #1041 clears outstanding checks; fees post separately; everything else waits below for you to categorize. Re-imports skip duplicates.</p>
+                <textarea value={csv} onChange={(e) => setCsv(e.target.value)} placeholder={'date,description,amount\n2026-08-01,SYSCO DENVER PAYMENT,-1240.55\n2026-08-01,SQUARE INC DES:250801,1897.22\n\n— or Wells Fargo style: —\nDate,Description,Debit,Credit\n08/01/2026,SYSCO DENVER,1240.55,\n08/01/2026,SQUARE INC,,1897.22'} className='w-full mt-3 border border-[#e0ddd8] rounded p-2 text-xs font-mono bg-white min-h-[120px]' />
                 <label className='flex items-center gap-2 mt-2 text-sm cursor-pointer'>
                     <input type='checkbox' checked={ack} onChange={(e) => setAck(e.target.checked)} className='accent-[#b68235]' />
                     I have verified this export against my bank statement
                 </label>
                 <div className='flex items-center gap-3 mt-3 flex-wrap'>
                     <button onClick={importCsv} disabled={!ack || busy || !csv.trim()} className={ack && !busy && csv.trim() ? btnOn : btnOff}>{busy ? 'Importing…' : 'Import'}</button>
-                    {sum && <span className='text-sm text-[#8a5f22]'>{sum.depositsMatched} deposit{sum.depositsMatched === 1 ? '' : 's'} auto-matched · {sum.queuedForReview} for review · {sum.duplicates} duplicate{sum.duplicates === 1 ? '' : 's'} skipped{sum.checksMatched ? ' · ' + sum.checksMatched + ' check' + (sum.checksMatched === 1 ? '' : 's') + ' cleared' : ''}{sum.badRows ? ' · ' + sum.badRows + ' bad row' + (sum.badRows === 1 ? '' : 's') : ''}</span>}
+                    {sum && <span className='text-sm text-[#8a5f22]'>Format: {sum.format || 'simple'} · {sum.depositsMatched} deposit{sum.depositsMatched === 1 ? '' : 's'} auto-matched · {sum.queuedForReview} for review · {sum.duplicates} duplicate{sum.duplicates === 1 ? '' : 's'} skipped{sum.checksMatched ? ' · ' + sum.checksMatched + ' check' + (sum.checksMatched === 1 ? '' : 's') + ' cleared' : ''}{sum.feesPosted ? ' · ' + sum.feesPosted + ' fee' + (sum.feesPosted === 1 ? '' : 's') + ' posted' : ''}</span>}
                     {err && <span className='text-sm text-red-700 inline-flex items-center gap-1'><AlertTriangle size={14} />{err}</span>}
                 </div>
             </section>
@@ -892,6 +894,118 @@ function Inventory() {
     );
 }
 
+function Reconciliation() {
+    const today = new Date();
+    const monthStart = iso(new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1)));
+    const [data, setData] = useState<Record<string, any> | null>(null);
+    const [from, setFrom] = useState(monthStart);
+    const [to, setTo] = useState(iso(today));
+    const [err, setErr] = useState('');
+    function load() {
+        setErr('');
+        lapi.get('/api/reconciliation?from=' + from + '&to=' + to).then((r) => setData(r.data)).catch((e) => setErr((e as { message?: string }).message || 'Failed to load'));
+    }
+    useEffect(load, []);
+    const status = data?.status;
+    const statusColor = status === 'RECONCILED' ? 'text-green-700 bg-green-50 border-green-200' : 'text-red-700 bg-red-50 border-red-200';
+    return (
+        <main className='max-w-4xl mx-auto px-6 py-10 flex flex-col gap-6'>
+            <h2 className='text-2xl'>Reconciliation Dashboard</h2>
+            <p className='text-sm opacity-70'>Compare Bank vs. Books vs. POS Daily Summary totals to identify cash and tender mismatches.</p>
+            <div className='flex gap-3 items-end flex-wrap'>
+                <label className='flex flex-col text-xs'><span className='opacity-60 mb-1'>From</span><input type='date' value={from} onChange={(e) => setFrom(e.target.value)} className='border border-[#e0ddd8] rounded px-2 py-1.5 text-sm' /></label>
+                <label className='flex flex-col text-xs'><span className='opacity-60 mb-1'>To</span><input type='date' value={to} onChange={(e) => setTo(e.target.value)} className='border border-[#e0ddd8] rounded px-2 py-1.5 text-sm' /></label>
+                <button onClick={load} className={btnOn}>Reconcile</button>
+            </div>
+            {err && <p className='text-red-700 text-sm'>{err}</p>}
+            {data && (
+                <>
+                    <div className={'border rounded p-3 text-center font-semibold text-sm ' + statusColor}>
+                        {status === 'RECONCILED' ? '\u2713 All sources reconciled for this period' : '\u26A0 Discrepancies found \u2014 review below'}
+                    </div>
+                    <div className='grid gap-4 sm:grid-cols-3'>
+                        <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'>
+                            <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-2'>Bank Statement</div>
+                            <p className='text-sm'>Deposits: <strong>{money(data.bank?.deposits)}</strong></p>
+                            <p className='text-sm'>Withdrawals: <strong>{money(data.bank?.withdrawals)}</strong></p>
+                            <p className='text-sm'>Net: <strong>{money(data.bank?.net)}</strong></p>
+                            <p className='text-xs opacity-60 mt-1'>{data.bank?.lineCount} lines imported</p>
+                        </div>
+                        <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'>
+                            <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-2'>Books (Ledger)</div>
+                            <p className='text-sm'>Cash Balance: <strong>{money(data.books?.cashBalance)}</strong></p>
+                            <p className='text-sm'>Clearing Balance: <strong>{money(data.books?.clearingBalance)}</strong></p>
+                        </div>
+                        <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'>
+                            <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-2'>POS Summary</div>
+                            <p className='text-sm'>Revenue: <strong>{money(data.pos?.revenue)}</strong></p>
+                            <p className='text-sm'>Cash Collected: <strong>{money(data.pos?.cashCollected)}</strong></p>
+                            <p className='text-sm'>Card Collected: <strong>{money(data.pos?.cardCollected)}</strong></p>
+                            <p className='text-xs opacity-60 mt-1'>{data.pos?.dayCount} days posted</p>
+                        </div>
+                    </div>
+                    <div className='grid gap-4 sm:grid-cols-2'>
+                        <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'>
+                            <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-2'>Outstanding Checks</div>
+                            <p className='text-sm'>Total: <strong>{money(data.outstanding?.checks)}</strong> ({data.outstanding?.checkCount} checks)</p>
+                        </div>
+                        <div className={'border rounded p-4 ' + (data.mismatches?.total > 0 ? 'border-red-200 bg-red-50' : 'border-[#e0ddd8] bg-white/60')}>
+                            <div className='text-[11px] tracking-widest uppercase font-semibold mb-2' style={{ color: data.mismatches?.total > 0 ? '#b91c1c' : '#8a5f22' }}>Mismatches</div>
+                            <p className='text-sm'>Cash: <strong>{money(data.mismatches?.cash)}</strong></p>
+                            <p className='text-sm'>Card: <strong>{money(data.mismatches?.card)}</strong></p>
+                            <p className='text-sm font-semibold mt-1'>Total Variance: {money(data.mismatches?.total)}</p>
+                        </div>
+                    </div>
+                </>
+            )}
+        </main>
+    );
+}
+
+function Settings() {
+    const [verticals, setVerticals] = useState<Array<Record<string, any>>>([]);
+    const [active, setActive] = useState<Record<string, any> | null>(null);
+    const [msg, setMsg] = useState('');
+    const [busy, setBusy] = useState(false);
+    useEffect(() => {
+        lapi.get('/api/verticals').then((r) => setVerticals(r.data.verticals || [])).catch(() => {});
+        lapi.get('/api/verticals/active').then((r) => setActive(r.data)).catch(() => {});
+    }, []);
+    async function switchProfile(id: string) {
+        if (busy) return;
+        setBusy(true); setMsg('');
+        try {
+            const r = await lapi.post('/api/verticals/set', { profile_id: id });
+            setMsg('Switched to ' + r.data.label + (r.data.newAccountsAdded > 0 ? ' (' + r.data.newAccountsAdded + ' new accounts added)' : ''));
+            setActive({ profileId: id, label: r.data.label });
+        } catch (e) { setMsg((e as { message?: string }).message || 'Failed'); }
+        finally { setBusy(false); }
+    }
+    return (
+        <main className='max-w-3xl mx-auto px-6 py-10 flex flex-col gap-6'>
+            <h2 className='text-2xl'>Settings &amp; Industry Profile</h2>
+            <p className='text-sm opacity-70'>Select the industry profile for this location. This configures your Chart of Accounts, KPI definitions, and category routing.</p>
+            {active && <p className='text-sm'>Current profile: <strong>{active.label || active.profileId}</strong></p>}
+            <div className='grid gap-4 sm:grid-cols-2'>
+                {verticals.map((v) => (
+                    <div key={v.id} className={'border rounded p-4 flex flex-col gap-2 ' + (active?.profileId === v.id ? 'border-[#b68235] bg-[#b68235]/5' : 'border-[#e0ddd8] bg-white/60')}>
+                        <div className='text-sm font-semibold'>{v.label}</div>
+                        <p className='text-xs opacity-70'>{v.description}</p>
+                        <p className='text-xs opacity-60'>{v.accountCount} accounts &middot; KPIs: {(v.kpis || []).join(', ')}</p>
+                        {active?.profileId !== v.id && <button onClick={() => switchProfile(v.id)} disabled={busy} className={btnOn + ' mt-auto self-start text-xs'}>Activate</button>}
+                        {active?.profileId === v.id && <span className='text-xs text-[#8a5f22] font-semibold mt-auto'>\u2713 Active</span>}
+                    </div>
+                ))}
+            </div>
+            {msg && <p className='text-sm mt-2'>{msg}</p>}
+            <section className='border border-[#e0ddd8] rounded bg-white/40 p-4 text-sm opacity-80 mt-4'>
+                <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-1'>How profiles work</div>
+                <p>Each industry profile provides a specialized Chart of Accounts and KPI definitions tuned to that business type. Switching profiles adds any missing accounts to your ledger without removing existing ones. Your posted entries are never affected.</p>
+            </section>
+        </main>
+    );
+}
+
 const GUIDE_KB: Array<{ keys: string[]; a: string }> = [
     { keys: ['bank', 'statement'], a: 'Bank CSV is exactly three columns: date,description,amount (dates YYYY-MM-DD; deposits positive, spending negative). Card settlements, delivery payouts, and cash deposits auto-match to clearing accounts; a withdrawal like CHECK #1041 clears a matching outstanding check; everything else waits in the review queue for you to categorize.' },
     { keys: ['scan', 'invoice', 'photo', 'ocr'], a: 'On the Invoice Scanner tab, photograph a supplier invoice and the AI extracts the line items - amounts it cannot read are flagged, never guessed. Review, then Post to books to record it as Accounts Payable.' },
@@ -915,6 +1029,8 @@ function Guide({ view }: { view: string }) {
     const [steps, setSteps] = useState<Array<{ done: boolean; label: string; hash: string }> | null>(null);
     const [q, setQ] = useState('');
     const [a, setA] = useState('');
+    const [thinking, setThinking] = useState(false);
+    const [history, setHistory] = useState<Array<{ role: string; text: string }>>([]);
     useEffect(() => {
         if (!open || steps) return;
         const today = new Date();
@@ -951,38 +1067,63 @@ function Guide({ view }: { view: string }) {
         daybook: 'One balanced journal entry per business day - post it after close.',
         'pos-summary': 'Export the daily summary CSV from your POS (Toast, Clover, Square) and paste it here. No API keys needed - just the numbers from your daily report.',
         inventory: 'Count what is on the shelf and enter the dollar value. The system calculates the variance from the ledger and posts a COGS adjustment automatically.',
-        home: 'Work left to right: Daybook, POS Import, Bank, A/P, Delivery, Payroll, Inventory, Reports, Compliance. Open me anytime for the closing checklist.'
+        reconciliation: 'This view compares Bank vs Books vs POS to find tender mismatches. Run it after importing both your bank statement and POS daily summaries.',
+        settings: 'Choose your industry profile here. It configures the Chart of Accounts and KPIs for your business type.',
+        home: 'Work left to right: Daybook, POS Import, Bank, A/P, Delivery, Payroll, Inventory, Reports, Compliance, Reconcile. Open me anytime for the closing checklist.'
     };
-    function ask(e: { preventDefault: () => void }) {
+    async function ask(e: { preventDefault: () => void }) {
         e.preventDefault();
-        const s = q.trim().toLowerCase();
-        if (!s) return;
-        const hit = GUIDE_KB.find((k) => k.keys.some((key) => s.includes(key)));
-        setA(hit ? hit.a : 'No note on that yet. Try: bank import, invoice scanning, aging, checks, delivery, payroll, compliance, QuickBooks, locations, daily sales, reports, or prime cost.');
+        const s = q.trim();
+        if (!s || thinking) return;
+        setHistory((h) => [...h, { role: 'user', text: s }]);
+        setQ(''); setA(''); setThinking(true);
+        try {
+            // Try the AI-powered backend first
+            const r = await lapi.post('/api/guide/ask', { question: s });
+            const answer = r.data.answer || 'I could not generate a response.';
+            setA(answer);
+            setHistory((h) => [...h, { role: 'assistant', text: answer }]);
+        } catch {
+            // Fallback to local KB if AI is unavailable
+            const lower = s.toLowerCase();
+            const hit = GUIDE_KB.find((k) => k.keys.some((key) => lower.includes(key)));
+            const fallback = hit ? hit.a : 'I could not reach the AI assistant right now. Try asking about: bank import, invoice scanning, aging, checks, delivery, payroll, compliance, QuickBooks, locations, daily sales, reports, reconciliation, or prime cost.';
+            setA(fallback);
+            setHistory((h) => [...h, { role: 'assistant', text: fallback }]);
+        } finally { setThinking(false); }
     }
     const next = steps ? steps.find((s) => !s.done) : null;
     return (
         <>
-            <button onClick={() => setOpen(!open)} aria-expanded={open} className='fixed right-5 bottom-5 z-40 border border-[#b68235] text-[#8a5f22] bg-[#fbfaf9] rounded-full px-4 py-2 text-sm shadow-md hover:bg-[#b68235]/10'>✦ Guide</button>
+            <button onClick={() => setOpen(!open)} aria-expanded={open} className='fixed right-5 bottom-5 z-40 border border-[#b68235] text-[#8a5f22] bg-[#fbfaf9] rounded-full px-4 py-2 text-sm shadow-md hover:bg-[#b68235]/10 flex items-center gap-2'><Send size={14} /> Ask Your Bookkeeper</button>
             {open && (
-                <div className='fixed right-5 bottom-16 z-40 w-80 max-w-[calc(100vw-40px)] max-h-[70vh] overflow-y-auto bg-[#fbfaf9] border border-[#e0ddd8] rounded-lg shadow-lg p-4 flex flex-col gap-3'>
-                    <div><div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>Bookkeeper guide</div><h3 className='text-lg'>Where you are in the flow</h3></div>
-                    {tips[view] && <p className='text-xs opacity-70'>{tips[view]}</p>}
+                <div className='fixed right-5 bottom-16 z-40 w-96 max-w-[calc(100vw-40px)] max-h-[80vh] overflow-y-auto bg-[#fbfaf9] border border-[#e0ddd8] rounded-lg shadow-lg p-4 flex flex-col gap-3'>
+                    <div><div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>AI Bookkeeper Assistant</div><h3 className='text-lg'>Ask me anything about your books</h3></div>
+                    {tips[view] && <p className='text-xs opacity-70 italic'>{tips[view]}</p>}
                     <div>
-                        {!steps ? <p className='text-xs opacity-60'>Checking your books…</p> : steps.map((s) => (
+                        {!steps ? <p className='text-xs opacity-60'>Checking your books\u2026</p> : steps.map((s) => (
                             <div key={s.label} className='flex items-center gap-2 py-1.5 border-b border-[#e0ddd8] last:border-b-0 text-sm'>
                                 <span className={'w-2 h-2 rounded-full border border-[#b68235] shrink-0 ' + (s.done ? 'bg-[#b68235]' : '')}></span>
                                 <span className={s.done ? 'opacity-50 line-through' : ''}>{s.label}</span>
-                                {!s.done && <a href={s.hash} className='ml-auto text-xs text-[#8a5f22] shrink-0'>go →</a>}
+                                {!s.done && <a href={s.hash} className='ml-auto text-xs text-[#8a5f22] shrink-0'>go \u2192</a>}
                             </div>
                         ))}
-                        {steps && (next ? <p className='text-sm mt-2'><strong>Next up:</strong> {next.label} <a href={next.hash} className='text-[#8a5f22]'>open →</a></p> : <p className='text-sm mt-2'>All clear - the books are closed up. ✦</p>)}
+                        {steps && (next ? <p className='text-sm mt-2'><strong>Next up:</strong> {next.label} <a href={next.hash} className='text-[#8a5f22]'>open \u2192</a></p> : <p className='text-sm mt-2'>All clear - the books are closed up. \u2726</p>)}
                     </div>
+                    {history.length > 0 && (
+                        <div className='border-t border-[#e0ddd8] pt-2 flex flex-col gap-2 max-h-48 overflow-y-auto'>
+                            {history.slice(-6).map((m, i) => (
+                                <div key={i} className={'text-sm rounded px-2 py-1.5 ' + (m.role === 'user' ? 'bg-[#b68235]/10 text-right' : 'bg-white border border-[#e0ddd8]')}>
+                                    {m.text}
+                                </div>
+                            ))}
+                        </div>
+                    )}
                     <form onSubmit={ask} className='flex gap-2'>
-                        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder='e.g. payroll CSV, compliance…' aria-label='Ask the guide' className='flex-1 border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm' />
-                        <button type='submit' className={btnOn + ' !px-3 !py-1'}>Ask</button>
+                        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={thinking ? 'Thinking\u2026' : 'Ask about your finances, KPIs, variances\u2026'} aria-label='Ask the bookkeeper' disabled={thinking} className='flex-1 border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm disabled:opacity-50' />
+                        <button type='submit' disabled={thinking} className={thinking ? btnOff + ' !px-3 !py-1' : btnOn + ' !px-3 !py-1'}><Send size={14} /></button>
                     </form>
-                    {a && <p className='text-sm'>{a}</p>}
+                    {a && !history.length && <p className='text-sm'>{a}</p>}
                 </div>
             )}
         </>
@@ -1002,6 +1143,8 @@ function App() {
         if (h === '#/inventory') return 'inventory';
         if (h === '#/compliance') return 'compliance';
         if (h === '#/reports') return 'reports';
+        if (h === '#/reconciliation') return 'reconciliation';
+        if (h === '#/settings') return 'settings';
         return 'home';
     };
     const [view, setView] = useState<string>(fromHash());
@@ -1040,7 +1183,7 @@ function App() {
             <header className='border-b border-[#e0ddd8] bg-[#faf9f7] px-6 py-4 flex items-center gap-5 flex-wrap'>
                 <button onClick={() => go('home')} className='flex items-center gap-3'>
                     <Crate size={30} />
-                    <h1 className='text-2xl'>Restaurant Bookkeeper <span className='text-[#b68235] text-sm'>/ in a box</span></h1>
+                    <h1 className='text-2xl'>1st Bookkeeper<span className='text-[#b68235] text-sm'> / In-A-Box</span></h1>
                 </button>
                 {locs.length > 0 && (
                     <select value={currentLoc} onChange={(e) => switchLoc(e.target.value)} title='Active location' aria-label='Active location' className='border border-[#e0ddd8] rounded px-2 py-1.5 text-xs bg-white'>
@@ -1060,6 +1203,8 @@ function App() {
                     <button className={tab(view === 'reports')} onClick={() => go('reports')} aria-current={view === 'reports' ? 'page' : undefined}>Reports</button>
                     <button className={tab(view === 'compliance')} onClick={() => go('compliance')} aria-current={view === 'compliance' ? 'page' : undefined}>Compliance</button>
                     <button className={tab(view === 'scanner')} onClick={() => go('scanner')} aria-current={view === 'scanner' ? 'page' : undefined}>Invoice Scanner</button>
+                    <button className={tab(view === 'reconciliation')} onClick={() => go('reconciliation')} aria-current={view === 'reconciliation' ? 'page' : undefined}>Reconcile</button>
+                    <button className={tab(view === 'settings')} onClick={() => go('settings')} aria-current={view === 'settings' ? 'page' : undefined}>Settings</button>
                 </nav>
             </header>
             {view === 'home' ? <Home go={go} scanCount={scanCount} />
@@ -1072,6 +1217,8 @@ function App() {
                 : view === 'inventory' ? <Inventory />
                 : view === 'compliance' ? <Compliance />
                 : view === 'reports' ? <Reports />
+                : view === 'reconciliation' ? <Reconciliation />
+                : view === 'settings' ? <Settings />
                 : <Scanner />}
             <Guide view={view} />
         </div>

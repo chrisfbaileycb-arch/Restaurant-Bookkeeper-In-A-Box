@@ -1,12 +1,16 @@
-# Restaurant Bookkeeper in a Box
+# 1st Bookkeeper-In-A-Box
 
-Multi-tenant restaurant accounting engine — part of the **Signal F** portfolio.
+**Specialized Ledger Intelligence** — part of the **Signal Holdings / Expo Proxy** portfolio.
 
-A standalone, double-entry bookkeeping platform purpose-built for restaurant
-operators: CSV-first ingestion from any POS, a true ledger with restaurant
-chart of accounts, print-ready financial reports, Colorado + federal tax
-compliance tracking, check reconciliation, and QuickBooks-optional export
-bridges. One app, one login, multiple isolated location workspaces.
+Built for Restaurants, Salons & Barbershops, Tattoo Studios, Auto Repair & Service Businesses. *(Expanding to your industry soon)*
+
+A standalone, double-entry bookkeeping platform with multi-vertical industry
+profiles: CSV-first ingestion from any POS (no API keys needed), a true ledger
+with industry-specific chart of accounts, print-ready financial reports,
+Colorado + federal tax compliance tracking, bank reconciliation with multi-format
+CSV support, an AI-powered conversational bookkeeper assistant, and
+QuickBooks-optional export bridges. One app, one login, multiple isolated
+location workspaces — each with its own industry profile.
 
 **Live deployment:** the production instance runs on
 [AppDeploy](https://dashboard.appdeploy.ai) at
@@ -18,7 +22,7 @@ canonical product code lives in **`app/`** and is deployed to AppDeploy.
 
 | Layer | What it is |
 |---|---|
-| **`app/`** | **The product (canonical).** React + Vite + Tailwind frontend (`app/src/`) and AppDeploy SDK backend (`app/backend/index.ts`): multi-location workspaces, Daybook, Bank import with check clearing, A/P aging + check register, delivery reconciliation, payroll journals, printable Reports with the QuickBooks bridge (QBO CSV + IIF), the CO + federal compliance calendar, AI Invoice Scanner, and the in-app bookkeeper Guide. Deployed to AppDeploy. |
+| **`app/`** | **The product (canonical).** React + Vite + Tailwind frontend (`app/src/`) and AppDeploy SDK backend (`app/backend/index.ts`): multi-location workspaces, Daybook, POS Import (Toast/Clover/Square), Bank import with multi-format auto-detection and check clearing, A/P aging + check register, delivery reconciliation, payroll journals, physical inventory with variance posting, printable Reports with the enhanced QBO bridge (department/category breakdowns), the CO + federal compliance calendar, AI Invoice Scanner, Reconciliation Dashboard (Bank vs Books vs POS), multi-vertical industry profiles (Restaurant, Salon, Tattoo, Auto Repair), AI conversational bookkeeper assistant, and Settings. Deployed to AppDeploy. |
 | `api/`, `lib/`, `migrations/`, `public/`, `hatchable.toml` | **Legacy (Hatchable engine).** The earlier multi-tenant Postgres implementation. All of its bookkeeping modules have been ported to `app/`; what remains here as reference only is the POS 16-column CSV contract, the org_user auth model, and Stripe billing. Not deployed. |
 
 ### Legacy engine reference (Hatchable era — superseded by `app/`)
