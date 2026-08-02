@@ -99,18 +99,26 @@ function Daybook() {
     }
 
     const kpis = data ? data.kpis : null;
+    const verticalKpis: Array<{ key: string; label: string; value: number | null; warning: boolean }> = data?.verticalKpis || [];
     const fields: Array<[keyof typeof form, string]> = [['business_date', 'Business date'], ['food_sales', 'Food sales'], ['beverage_sales', 'Beverage sales'], ['sales_tax', 'Sales tax collected'], ['cc_tips', 'Card tips'], ['cash_collected', 'Cash collected'], ['processing_fees', 'Processing fees']];
     return (
         <main className='max-w-3xl mx-auto px-6 py-8 flex flex-col gap-6'>
             <div className='flex items-baseline justify-between flex-wrap gap-2'>
                 <h2 className='text-xl'>Daybook <span className='text-sm opacity-60'>· month to date</span></h2>
+                {data?.profileLabel && <span className='text-xs bg-[#b68235]/10 text-[#8a5f22] rounded px-2 py-0.5'>{data.profileLabel}</span>}
                 {data && data.unposted > 0 && <a href='#/scanner' className='text-sm text-[#8a5f22]'>{data.unposted} scanned invoice{data.unposted > 1 ? 's' : ''} not yet posted →</a>}
             </div>
             <section className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
                 <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'><div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>Cash on hand</div><div className='text-2xl tabular-nums mt-1'>{data ? money(data.cash) : '—'}</div></div>
                 <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'><div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>Revenue · MTD</div><div className='text-2xl tabular-nums mt-1'>{data ? money(data.totals.revenue) : '—'}</div></div>
                 <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'><div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>Net income · MTD</div><div className='text-2xl tabular-nums mt-1'>{data ? money(data.totals.netIncome) : '—'}</div></div>
-                <div className='border border-[#e0ddd8] rounded p-4 bg-white/60'><div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold'>Prime cost</div><div className='text-2xl tabular-nums mt-1'>{kpis && kpis.primeCostPct != null ? kpis.primeCostPct.toFixed(1) + '%' : '—'}</div><div className='text-xs opacity-60'>{kpis && kpis.primeCostStatus ? kpis.primeCostStatus : '65% line'}</div></div>
+                {verticalKpis.map((kpi) => (
+                    <div key={kpi.key} className={'border rounded p-4 bg-white/60 ' + (kpi.warning ? 'border-red-400' : 'border-[#e0ddd8]')}>
+                        <div className='text-[11px] tracking-widest uppercase font-semibold' style={{ color: kpi.warning ? '#b91c1c' : '#8a5f22' }}>{kpi.label}</div>
+                        <div className='text-2xl tabular-nums mt-1'>{kpi.value != null ? kpi.value.toFixed(1) + '%' : '—'}</div>
+                        {kpi.warning && <div className='text-xs text-red-700 mt-0.5'>Above threshold</div>}
+                    </div>
+                ))}
             </section>
             <section className='border border-[#e0ddd8] rounded bg-white/60 p-4'>
                 <div className='text-[11px] tracking-widest uppercase text-[#8a5f22] font-semibold mb-2'>Post daily sales</div>
@@ -1071,17 +1079,21 @@ function Guide({ view }: { view: string }) {
         settings: 'Choose your industry profile here. It configures the Chart of Accounts and KPIs for your business type.',
         home: 'Work left to right: Daybook, POS Import, Bank, A/P, Delivery, Payroll, Inventory, Reports, Compliance, Reconcile. Open me anytime for the closing checklist.'
     };
+    const [suggestions, setSuggestions] = useState<string[]>([]);
     async function ask(e: { preventDefault: () => void }) {
         e.preventDefault();
         const s = q.trim();
         if (!s || thinking) return;
-        setHistory((h) => [...h, { role: 'user', text: s }]);
-        setQ(''); setA(''); setThinking(true);
+        const newHistory = [...history, { role: 'user', text: s }];
+        setHistory(newHistory);
+        setQ(''); setA(''); setThinking(true); setSuggestions([]);
         try {
-            // Try the AI-powered backend first
-            const r = await lapi.post('/api/guide/ask', { question: s });
+            // Send conversation history for multi-turn context
+            const r = await lapi.post('/api/guide/ask', { question: s, conversation_history: newHistory.slice(-16) });
             const answer = r.data.answer || 'I could not generate a response.';
+            const sug: string[] = r.data.suggestions || [];
             setA(answer);
+            setSuggestions(sug);
             setHistory((h) => [...h, { role: 'assistant', text: answer }]);
         } catch {
             // Fallback to local KB if AI is unavailable
@@ -1089,8 +1101,25 @@ function Guide({ view }: { view: string }) {
             const hit = GUIDE_KB.find((k) => k.keys.some((key) => lower.includes(key)));
             const fallback = hit ? hit.a : 'I could not reach the AI assistant right now. Try asking about: bank import, invoice scanning, aging, checks, delivery, payroll, compliance, QuickBooks, locations, daily sales, reports, reconciliation, or prime cost.';
             setA(fallback);
+            setSuggestions(['What are my KPIs?', 'How much cash do I have?', 'Do I have any overdue bills?']);
             setHistory((h) => [...h, { role: 'assistant', text: fallback }]);
         } finally { setThinking(false); }
+    }
+    function askSuggestion(text: string) {
+        setQ(text);
+        // Auto-submit the suggestion
+        const newHistory = [...history, { role: 'user', text }];
+        setHistory(newHistory);
+        setThinking(true); setSuggestions([]);
+        lapi.post('/api/guide/ask', { question: text, conversation_history: newHistory.slice(-16) }).then((r) => {
+            const answer = r.data.answer || 'I could not generate a response.';
+            setA(answer); setSuggestions(r.data.suggestions || []);
+            setHistory((h) => [...h, { role: 'assistant', text: answer }]);
+        }).catch(() => {
+            setA('I could not reach the AI assistant right now.');
+            setSuggestions([]);
+            setHistory((h) => [...h, { role: 'assistant', text: 'Connection failed.' }]);
+        }).finally(() => { setThinking(false); setQ(''); });
     }
     const next = steps ? steps.find((s) => !s.done) : null;
     return (
@@ -1123,10 +1152,101 @@ function Guide({ view }: { view: string }) {
                         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={thinking ? 'Thinking\u2026' : 'Ask about your finances, KPIs, variances\u2026'} aria-label='Ask the bookkeeper' disabled={thinking} className='flex-1 border border-[#e0ddd8] rounded px-2 py-1.5 bg-white text-sm disabled:opacity-50' />
                         <button type='submit' disabled={thinking} className={thinking ? btnOff + ' !px-3 !py-1' : btnOn + ' !px-3 !py-1'}><Send size={14} /></button>
                     </form>
+                    {suggestions.length > 0 && (
+                        <div className='flex flex-wrap gap-1.5'>
+                            {suggestions.map((s, i) => (
+                                <button key={i} onClick={() => askSuggestion(s)} className='text-xs border border-[#b68235]/40 text-[#8a5f22] rounded-full px-2.5 py-1 hover:bg-[#b68235]/10 transition-colors'>{s}</button>
+                            ))}
+                        </div>
+                    )}
                     {a && !history.length && <p className='text-sm'>{a}</p>}
                 </div>
             )}
         </>
+    );
+}
+
+// ── Getting Started Onboarding Wizard ──
+function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
+    const [step, setStep] = useState(1);
+    const [businessName, setBusinessName] = useState('');
+    const [selectedProfile, setSelectedProfile] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState('');
+
+    const profiles = [
+        { id: 'restaurant', label: 'Restaurant & Food Service', icon: '\uD83C\uDF7D\uFE0F', desc: 'Full-service, fast-casual, food trucks, catering. Tracks food/bev COGS, prime cost, waste, and tip reconciliation.' },
+        { id: 'salon', label: 'Salon & Barbershop', icon: '\u2702\uFE0F', desc: 'Hair salons, barbershops, nail studios, spas. Tracks booth rental, commission splits, retail product margins.' },
+        { id: 'tattoo', label: 'Tattoo & Piercing Studio', icon: '\uD83C\uDFA8', desc: 'Tattoo parlors, piercing studios, body art. Tracks artist percentage splits, supply costs, aftercare retail.' },
+        { id: 'auto_repair', label: 'Auto Repair & Service', icon: '\uD83D\uDD27', desc: 'Mechanical shops, tire shops, body shops. Tracks parts vs labor COGS, sublet repairs, warranty claims.' }
+    ];
+
+    async function finish() {
+        if (!selectedProfile || !businessName.trim()) return;
+        setBusy(true); setErr('');
+        try {
+            // Create the location with the business name and selected profile
+            const r = await api.post('/api/locations', { name: businessName.trim() });
+            const locId = String(r.data.id);
+            localStorage.setItem('rb_location', locId);
+            // Set the vertical profile
+            await api.post('/api/verticals/set', { location_id: locId, profile_id: selectedProfile });
+            // Mark onboarding complete
+            localStorage.setItem('rb_onboarded', 'true');
+            onComplete();
+        } catch (e) {
+            setErr((e as { message?: string }).message || 'Setup failed. Please try again.');
+        } finally { setBusy(false); }
+    }
+
+    return (
+        <div className='fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4'>
+            <div className='bg-[#faf9f7] rounded-xl shadow-2xl max-w-lg w-full p-8 flex flex-col gap-6'>
+                <div className='text-center'>
+                    <Crate size={48} />
+                    <h1 className='text-2xl mt-3'>Welcome to <strong>1st Bookkeeper-In-A-Box</strong></h1>
+                    <p className='text-sm opacity-70 mt-1'>Specialized Ledger Intelligence \u2014 let\u2019s set up your books in 30 seconds.</p>
+                </div>
+                {step === 1 && (
+                    <div className='flex flex-col gap-4'>
+                        <label className='text-sm font-semibold'>What\u2019s your business name?</label>
+                        <input value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder='e.g. Main Street Barbershop' className='border border-[#e0ddd8] rounded px-3 py-2 bg-white text-sm' autoFocus />
+                        <button onClick={() => { if (businessName.trim()) setStep(2); }} disabled={!businessName.trim()} className={businessName.trim() ? btnOn : btnOff}>Next \u2192</button>
+                    </div>
+                )}
+                {step === 2 && (
+                    <div className='flex flex-col gap-4'>
+                        <label className='text-sm font-semibold'>What type of business do you run?</label>
+                        <div className='grid gap-3 sm:grid-cols-2'>
+                            {profiles.map((p) => (
+                                <button key={p.id} onClick={() => setSelectedProfile(p.id)} className={'border rounded-lg p-3 text-left transition-all ' + (selectedProfile === p.id ? 'border-[#b68235] bg-[#b68235]/10 ring-2 ring-[#b68235]/30' : 'border-[#e0ddd8] hover:border-[#b68235]/50')}>
+                                    <div className='text-lg'>{p.icon} <span className='text-sm font-semibold'>{p.label}</span></div>
+                                    <p className='text-xs opacity-70 mt-1'>{p.desc}</p>
+                                </button>
+                            ))}
+                        </div>
+                        <div className='flex gap-3'>
+                            <button onClick={() => setStep(1)} className='text-sm opacity-60 hover:opacity-100'>\u2190 Back</button>
+                            <button onClick={() => { if (selectedProfile) setStep(3); }} disabled={!selectedProfile} className={selectedProfile ? btnOn + ' flex-1' : btnOff + ' flex-1'}>Next \u2192</button>
+                        </div>
+                    </div>
+                )}
+                {step === 3 && (
+                    <div className='flex flex-col gap-4'>
+                        <div className='border border-[#b68235] rounded-lg p-4 bg-[#b68235]/5'>
+                            <div className='text-sm font-semibold'>Ready to go!</div>
+                            <p className='text-sm mt-1'>We\u2019ll create <strong>{businessName}</strong> as a <strong>{profiles.find((p) => p.id === selectedProfile)?.label}</strong> with a pre-configured Chart of Accounts and industry-specific KPI dashboard.</p>
+                            <p className='text-xs opacity-70 mt-2'>You can always change your profile later in Settings.</p>
+                        </div>
+                        {err && <p className='text-sm text-red-700'>{err}</p>}
+                        <div className='flex gap-3'>
+                            <button onClick={() => setStep(2)} className='text-sm opacity-60 hover:opacity-100'>\u2190 Back</button>
+                            <button onClick={finish} disabled={busy} className={busy ? btnOff + ' flex-1' : btnOn + ' flex-1'}>{busy ? 'Setting up\u2026' : 'Launch my books \u2726'}</button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
     );
 }
 
@@ -1150,12 +1270,20 @@ function App() {
     const [view, setView] = useState<string>(fromHash());
     const [scanCount, setScanCount] = useState(0);
     const [locs, setLocs] = useState<Array<Record<string, any>>>([]);
+    const [showOnboarding, setShowOnboarding] = useState(false);
 
     useEffect(() => {
         const onHash = () => setView(fromHash());
         window.addEventListener('hashchange', onHash);
         lapi.get('/api/invoices').then((r) => setScanCount((r.data.invoices || []).length)).catch(() => {});
-        api.get('/api/locations').then((r) => setLocs(r.data.locations || [])).catch(() => {});
+        api.get('/api/locations').then((r) => {
+            const locations = r.data.locations || [];
+            setLocs(locations);
+            // Show onboarding if no locations exist and user hasn't dismissed it
+            if (locations.length === 0 && !localStorage.getItem('rb_onboarded')) {
+                setShowOnboarding(true);
+            }
+        }).catch(() => {});
         return () => window.removeEventListener('hashchange', onHash);
     }, []);
 
@@ -1221,6 +1349,7 @@ function App() {
                 : view === 'settings' ? <Settings />
                 : <Scanner />}
             <Guide view={view} />
+            {showOnboarding && <OnboardingWizard onComplete={() => { setShowOnboarding(false); window.location.reload(); }} />}
         </div>
     );
 }

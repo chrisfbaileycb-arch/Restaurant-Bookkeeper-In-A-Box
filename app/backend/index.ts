@@ -276,6 +276,45 @@ function plFrom(rows: Awaited<ReturnType<typeof accountBalances>>) {
     };
 }
 
+// Compute dynamic KPIs based on active vertical profile
+function computeVerticalKpis(rows: Awaited<ReturnType<typeof accountBalances>>, profile: VerticalProfile): Array<{ key: string; label: string; value: number | null; warning: boolean }> {
+    const sum = (rs: typeof rows) => cents(rs.reduce((s, r) => s + r.balance, 0));
+    const revenue = rows.filter((r) => r.type === 'revenue');
+    const cogs = rows.filter((r) => r.type === 'cogs');
+    const expenses = rows.filter((r) => r.type === 'expense');
+    const totalRevenue = sum(revenue), totalCogs = sum(cogs);
+    const labor = cents(expenses.filter((r) => r.name.startsWith('Wages') || r.name === 'Payroll Taxes').reduce((s, r) => s + r.balance, 0));
+    const pct = (a: number, b: number) => (b > 0 ? cents((a / b) * 100) : null);
+    const byName = (name: string) => rows.find((r) => r.name === name)?.balance ?? 0;
+    const byPrefix = (prefix: string) => cents(rows.filter((r) => r.name.startsWith(prefix)).reduce((s, r) => s + r.balance, 0));
+
+    return profile.kpiDefs.map((kpi) => {
+        let value: number | null = null;
+        switch (kpi.key) {
+            // Restaurant
+            case 'foodCostPct': value = pct(byPrefix('Food Cost'), byName('Food Sales')); break;
+            case 'beverageCostPct': value = pct(byPrefix('Beverage Cost'), byName('Beverage Sales')); break;
+            case 'primeCostPct': value = pct(totalCogs + labor, totalRevenue); break;
+            // Salon
+            case 'retailMarginPct': { const rs = byName('Retail Product Sales'); const rc = byName('COGS - Retail Products'); value = rs > 0 ? pct(rs - rc, rs) : null; break; }
+            case 'productUsageRatio': { const svc = sum(revenue.filter((r) => r.name.includes('Service'))); value = pct(byName('COGS - Professional Supplies'), svc); break; }
+            case 'revenuePerChair': value = totalRevenue; break; // Placeholder: divide by chair_count when configured
+            // Tattoo
+            case 'supplyCostPct': value = pct(totalCogs, totalRevenue); break;
+            case 'artistSplitPct': value = pct(byName('Artist Percentage Splits'), byName('Tattoo Service Revenue')); break;
+            case 'revenuePerStation': value = totalRevenue; break; // Placeholder: divide by station_count when configured
+            // Auto repair
+            case 'partsMarginPct': { const ps = byName('Parts Sales Revenue'); const pc = byName('COGS - Parts'); value = ps > 0 ? pct(ps - pc, ps) : null; break; }
+            case 'laborEfficiency': value = null; break; // Requires billed_hours / clocked_hours tracking
+            case 'effectiveLaborRate': value = null; break; // Requires billed_hours tracking
+            // Common
+            case 'laborCostPct': { const commission = byName('Commission Expense') + byName('Artist Percentage Splits') + byName('Guest Artist Payouts'); value = pct(labor + commission, totalRevenue); break; }
+            default: value = null;
+        }
+        return { key: kpi.key, label: kpi.label, value, warning: value !== null && kpi.warningThreshold !== undefined && value > kpi.warningThreshold };
+    });
+}
+
 const CATEGORY_ROUTES: Array<[string[], string]> = [
     [['meat', 'protein', 'beef', 'chicken', 'pork', 'seafood'], 'Food Cost - Meat'],
     [['produce', 'vegetable', 'fruit'], 'Food Cost - Produce'],
@@ -511,20 +550,29 @@ function parsePosSummaryCsv(csv: string) {
     return { ok: true as const, rows };
 }
 
-function buildPosSummaryEntry(row: Record<string, any>): JEntry {
+// POS revenue account mapping per vertical profile
+const POS_REVENUE_ACCOUNTS: Record<string, { primary: string; secondary: string }> = {
+    restaurant: { primary: 'Food Sales', secondary: 'Beverage Sales' },
+    salon: { primary: 'Service Revenue - Cuts & Styling', secondary: 'Retail Product Sales' },
+    tattoo: { primary: 'Tattoo Service Revenue', secondary: 'Aftercare & Retail Sales' },
+    auto_repair: { primary: 'Labor Revenue - Mechanical', secondary: 'Parts Sales Revenue' }
+};
+
+function buildPosSummaryEntry(row: Record<string, any>, profileId?: string): JEntry {
     const desc = row.sourcePos + ' daily summary ' + row.businessDate;
     const collected = cents(row.foodSales + row.beverageSales + row.salesTax + row.ccTips + row.giftCards);
     const cardGross = cents(collected - row.cashDrops);
     const actualCash = row.actualCashDrop ?? row.cashDrops;
     const overShort = cents(actualCash - row.cashDrops);
+    const revenueAccounts = POS_REVENUE_ACCOUNTS[profileId || 'restaurant'] || POS_REVENUE_ACCOUNTS.restaurant;
     const lines: JLine[] = [
         ...(actualCash > 0 ? [{ accountName: 'Cash Drawer', debit: cents(actualCash), credit: 0, description: 'Cash collected — ' + desc }] : []),
         ...(cardGross > 0 ? [{ accountName: 'Other Tender Clearing', debit: cents(cardGross - row.processingFees), credit: 0, description: 'Card collections — ' + desc }] : []),
         ...(row.processingFees > 0 ? [{ accountName: 'POS and Software Fees', debit: cents(row.processingFees), credit: 0, description: 'Processing fees — ' + desc }] : []),
         ...(overShort < 0 ? [{ accountName: 'Cash Over/Short', debit: cents(-overShort), credit: 0, description: 'Drawer short — ' + desc }] : []),
-        ...(row.foodSales > 0 ? [{ accountName: 'Food Sales', debit: 0, credit: cents(row.foodSales), description: desc }] : []),
-        ...(row.beverageSales > 0 ? [{ accountName: 'Beverage Sales', debit: 0, credit: cents(row.beverageSales), description: desc }] : []),
-        ...(row.salesTax > 0 ? [{ accountName: 'Sales Tax Payable - CO', debit: 0, credit: cents(row.salesTax), description: 'Sales tax — ' + desc }] : []),
+        ...(row.foodSales > 0 ? [{ accountName: revenueAccounts.primary, debit: 0, credit: cents(row.foodSales), description: desc }] : []),
+        ...(row.beverageSales > 0 ? [{ accountName: revenueAccounts.secondary, debit: 0, credit: cents(row.beverageSales), description: desc }] : []),
+        ...(row.salesTax > 0 ? [{ accountName: 'Sales Tax Payable - CO', debit: 0, credit: cents(row.salesTax), description: desc }] : []),
         ...(row.ccTips > 0 ? [{ accountName: 'Tips Payable', debit: 0, credit: cents(row.ccTips), description: 'Card tips — ' + desc }] : []),
         ...(row.giftCards > 0 ? [{ accountName: 'Gift Card Liability', debit: 0, credit: cents(row.giftCards), description: 'Gift cards activated — ' + desc }] : []),
         ...(overShort > 0 ? [{ accountName: 'Cash Over/Short', debit: 0, credit: cents(overShort), description: 'Drawer over — ' + desc }] : [])
@@ -535,11 +583,29 @@ function buildPosSummaryEntry(row: Record<string, any>): JEntry {
 // ── Physical inventory (ported from legacy lib/inventory.js) ──
 // The operator counts what is actually on the shelf; the ledger says what
 // should be there. The variance posts to a dedicated COGS adjustment account.
-const INVENTORY_CATEGORIES = [
-    { key: 'food', inventoryAccount: 'Inventory - Food', adjustmentAccount: 'Food Cost - Inventory Adjustment' },
-    { key: 'beverage', inventoryAccount: 'Inventory - Beverage', adjustmentAccount: 'Beverage Cost - Inventory Adjustment' },
-    { key: 'paper', inventoryAccount: 'Inventory - Paper & Packaging', adjustmentAccount: 'Paper & Packaging Cost' }
-];
+const INVENTORY_CATEGORIES_BY_VERTICAL: Record<string, Array<{ key: string; label: string; inventoryAccount: string; adjustmentAccount: string }>> = {
+    restaurant: [
+        { key: 'food', label: 'Food inventory ($)', inventoryAccount: 'Inventory - Food', adjustmentAccount: 'Food Cost - Inventory Adjustment' },
+        { key: 'beverage', label: 'Beverage inventory ($)', inventoryAccount: 'Inventory - Beverage', adjustmentAccount: 'Beverage Cost - Inventory Adjustment' },
+        { key: 'paper', label: 'Paper & packaging ($)', inventoryAccount: 'Inventory - Paper & Packaging', adjustmentAccount: 'Paper & Packaging Cost' }
+    ],
+    salon: [
+        { key: 'retail', label: 'Retail products ($)', inventoryAccount: 'Inventory - Retail Products', adjustmentAccount: 'COGS - Retail Products' },
+        { key: 'professional', label: 'Professional supplies ($)', inventoryAccount: 'Inventory - Professional Supplies', adjustmentAccount: 'COGS - Professional Supplies' }
+    ],
+    tattoo: [
+        { key: 'inks', label: 'Inks & pigments ($)', inventoryAccount: 'Inventory - Inks & Pigments', adjustmentAccount: 'COGS - Inks & Pigments' },
+        { key: 'needles', label: 'Needles & disposables ($)', inventoryAccount: 'Inventory - Needles & Disposables', adjustmentAccount: 'COGS - Needles & Disposables' },
+        { key: 'aftercare', label: 'Aftercare products ($)', inventoryAccount: 'Inventory - Aftercare Products', adjustmentAccount: 'COGS - Aftercare Products' }
+    ],
+    auto_repair: [
+        { key: 'parts', label: 'Parts inventory ($)', inventoryAccount: 'Inventory - Parts', adjustmentAccount: 'COGS - Parts' },
+        { key: 'fluids', label: 'Fluids & chemicals ($)', inventoryAccount: 'Inventory - Fluids & Chemicals', adjustmentAccount: 'COGS - Fluids & Chemicals' },
+        { key: 'tires', label: 'Tires ($)', inventoryAccount: 'Inventory - Tires', adjustmentAccount: 'COGS - Tires' }
+    ]
+};
+// Legacy alias for backward compat
+const INVENTORY_CATEGORIES = INVENTORY_CATEGORIES_BY_VERTICAL.restaurant;
 
 function buildInventoryEntry(countDate: string, items: Array<{ inventoryAccount: string; adjustmentAccount: string; ledgerBalance: number; physicalCount: number }>): JEntry | null {
     const lines: JLine[] = [];
@@ -1088,11 +1154,15 @@ export const handler = router({
         if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         if (!b.csv || typeof b.csv !== 'string') return error('csv is required', 400);
         const { locId, defId } = await resolveLoc(b.location_id);
+        // Resolve active vertical profile for account routing
+        const locs = await listAll('locations');
+        const loc = locs.find((l) => String(l.id) === locId);
+        const profileId = (loc && loc.verticalProfile) || 'restaurant';
         const parsed = parsePosSummaryCsv(b.csv);
         if (!parsed.ok) return error('strict_validation_failed: ' + parsed.errors.map((e) => 'line ' + e.line + ': ' + e.message).join('; '), 422);
         let entriesPosted = 0, entriesSkipped = 0;
         for (const row of parsed.rows) {
-            const entry = buildPosSummaryEntry(row);
+            const entry = buildPosSummaryEntry(row, profileId);
             const posted = await postEntry(entry, locId, defId);
             if (posted.ok) entriesPosted++;
             else if ((posted.message || '').includes('already posted')) entriesSkipped++;
@@ -1106,18 +1176,31 @@ export const handler = router({
         const summaries = entries.filter((e) => e.source === 'pos_summary').sort((a, b) => (String(a.entryDate) > String(b.entryDate) ? -1 : 1));
         return json({ summaries: summaries.slice(0, 60).map((e) => ({ journalNo: e.journalNo, date: e.entryDate, description: e.description })) });
     }],
+    'GET /api/inventory/categories': [async ({ query }) => {
+        const { locId } = await resolveLoc(query.location);
+        const locs = await listAll('locations');
+        const loc = locs.find((l) => String(l.id) === locId);
+        const profileId = (loc && loc.verticalProfile) || 'restaurant';
+        const cats = INVENTORY_CATEGORIES_BY_VERTICAL[profileId] || INVENTORY_CATEGORIES_BY_VERTICAL.restaurant;
+        return json({ profileId, categories: cats });
+    }],
     'POST /api/inventory/count': [async ({ body }) => {
-        const b = (body || {}) as { count_date?: string; food_count?: number | null; beverage_count?: number | null; paper_count?: number | null; ack?: boolean; location_id?: string };
+        const b = (body || {}) as Record<string, any>;
         if (b.ack !== true) return error('disclaimer_acknowledgement_required: ' + POST_DISCLAIMER, 428);
         if (!b.count_date || !DATE_RE.test(b.count_date)) return error('count_date must be YYYY-MM-DD', 400);
         const { locId, defId } = await resolveLoc(b.location_id);
+        // Resolve active vertical profile for category routing
+        const locs = await listAll('locations');
+        const loc = locs.find((l) => String(l.id) === locId);
+        const profileId = (loc && loc.verticalProfile) || 'restaurant';
+        const categories = INVENTORY_CATEGORIES_BY_VERTICAL[profileId] || INVENTORY_CATEGORIES_BY_VERTICAL.restaurant;
         const existing = (await listAll('inventory_counts')).filter((c) => inLoc(c, locId, defId) && c.countDate === b.count_date);
         if (existing.length > 0) return error('count already recorded for this date', 409);
         const items: Array<{ inventoryAccount: string; adjustmentAccount: string; ledgerBalance: number; physicalCount: number }> = [];
         const variances: Record<string, number> = {};
         const asOf = b.count_date;
         const balances = await accountBalances('0000-01-01', asOf, locId, defId);
-        for (const cat of INVENTORY_CATEGORIES) {
+        for (const cat of categories) {
             const raw = (b as Record<string, any>)[cat.key + '_count'];
             if (raw === undefined || raw === null) continue;
             const physical = cents(Number(raw));
@@ -1173,7 +1256,13 @@ export const handler = router({
         const cash = cents(rows.filter((r) => r.name === 'Cash - General' || r.name === 'Cash Drawer').reduce((s, r) => s + r.balance, 0));
         const ap = rows.find((r) => r.name === 'Accounts Payable');
         const invs = (await listAll('invoices')).filter((i) => inLoc(i, locId, defId));
-        return json({ from, to, cash, apBalance: ap ? ap.balance : 0, totals: pl.totals, kpis: pl.kpis, scans: invs.length, unposted: invs.filter((i) => !i.posted).length });
+        // Compute vertical-specific KPIs
+        const locs = await listAll('locations');
+        const loc = locs.find((l) => String(l.id) === locId);
+        const profileId = (loc && loc.verticalProfile) || 'restaurant';
+        const profile = VERTICALS[profileId] || VERTICALS.restaurant;
+        const verticalKpis = computeVerticalKpis(period, profile);
+        return json({ from, to, cash, apBalance: ap ? ap.balance : 0, totals: pl.totals, kpis: pl.kpis, verticalKpis, profileId, profileLabel: profile.label, scans: invs.length, unposted: invs.filter((i) => !i.posted).length });
     }],
 
     // ── Multi-vertical profile management ──
@@ -1253,7 +1342,7 @@ export const handler = router({
 
     // ── AI Guide conversational assistant ──
     'POST /api/guide/ask': [async ({ body }) => {
-        const b = (body || {}) as { question?: string; location_id?: string };
+        const b = (body || {}) as { question?: string; location_id?: string; conversation_history?: Array<{ role: string; text: string }> };
         if (!b.question || typeof b.question !== 'string' || b.question.trim().length === 0) return error('question is required', 400);
         const { locId, defId } = await resolveLoc(b.location_id);
         // Gather live context for the AI
@@ -1271,6 +1360,7 @@ export const handler = router({
         const loc = locs.find((l) => String(l.id) === locId);
         const profileId = (loc && loc.verticalProfile) || 'restaurant';
         const profile = VERTICALS[profileId] || VERTICALS.restaurant;
+        const verticalKpis = computeVerticalKpis(balances, profile);
         const context = [
             'Business type: ' + profile.label,
             'Today: ' + today,
@@ -1281,20 +1371,34 @@ export const handler = router({
             'Cash on hand: $' + cash.toFixed(2),
             'Accounts Payable: $' + (ap ? ap.balance : 0).toFixed(2),
             'Bank lines awaiting review: ' + bankQueue,
-            'KPIs: ' + JSON.stringify(pl.kpis),
+            'Industry KPIs: ' + verticalKpis.map((k) => k.label + ': ' + (k.value != null ? k.value.toFixed(1) + '%' : 'N/A') + (k.warning ? ' [WARNING]' : '')).join(', '),
             lastCount ? 'Last inventory count: ' + lastCount.countDate + ' variances: ' + JSON.stringify(lastCount.variances) : 'No inventory counts recorded yet'
         ].join('\n');
+        // Build multi-turn message history
+        const messages: Array<{ role: string; content: string }> = [
+            { role: 'system', content: 'You are the 1st Bookkeeper-In-A-Box financial assistant for a ' + profile.label + ' business. You have access to the user\'s live ledger data below. Answer questions about their financial health, explain variances, suggest actions, and guide them through bookkeeping workflows. Be concise, specific, and reference actual numbers. Never guess amounts you do not have. If you cannot answer from the data provided, say so.\n\nAfter your answer, ALWAYS provide exactly 3 suggested follow-up questions the user might want to ask next, formatted as a JSON array on a new line starting with "SUGGESTIONS:" — e.g. SUGGESTIONS:["What is my food cost trend?","How much do I owe vendors?","Should I count inventory?"]\n\nLIVE LEDGER CONTEXT:\n' + context }
+        ];
+        // Include conversation history for multi-turn context (last 8 exchanges max)
+        const history = Array.isArray(b.conversation_history) ? b.conversation_history.slice(-16) : [];
+        for (const msg of history) {
+            messages.push({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.text });
+        }
+        messages.push({ role: 'user', content: b.question.trim() });
         try {
-            const result = await ai.chat({
-                messages: [
-                    { role: 'system', content: 'You are the 1st Bookkeeper-In-A-Box financial assistant. You have access to the user\'s live ledger data below. Answer questions about their financial health, explain variances, suggest actions, and guide them through bookkeeping workflows. Be concise, specific, and reference actual numbers. Never guess amounts you do not have. If you cannot answer from the data provided, say so.\n\nLIVE LEDGER CONTEXT:\n' + context },
-                    { role: 'user', content: b.question.trim() }
-                ]
-            });
-            return json({ answer: result.message || result.content || 'I could not generate a response. Please try rephrasing your question.' });
+            const result = await ai.chat({ messages });
+            const raw = result.message || result.content || 'I could not generate a response. Please try rephrasing your question.';
+            // Parse suggestions from the response
+            let answer = raw;
+            let suggestions: string[] = [];
+            const sugMatch = raw.match(/SUGGESTIONS:\s*(\[.*?\])/s);
+            if (sugMatch) {
+                answer = raw.replace(/SUGGESTIONS:\s*\[.*?\]/s, '').trim();
+                try { suggestions = JSON.parse(sugMatch[1]); } catch { suggestions = []; }
+            }
+            return json({ answer, suggestions });
         } catch (err) {
             console.error('AI guide chat failed', err);
-            return json({ answer: 'I\'m having trouble connecting to the AI service right now. Here\'s what I can tell you from the numbers: MTD revenue is $' + (pl.totals.revenue || 0).toFixed(2) + ', net income is $' + (pl.totals.netIncome || 0).toFixed(2) + ', and you have $' + cash.toFixed(2) + ' cash on hand.' });
+            return json({ answer: 'I\'m having trouble connecting to the AI service right now. Here\'s what I can tell you from the numbers: MTD revenue is $' + (pl.totals.revenue || 0).toFixed(2) + ', net income is $' + (pl.totals.netIncome || 0).toFixed(2) + ', and you have $' + cash.toFixed(2) + ' cash on hand.', suggestions: ['What are my KPIs?', 'How much cash do I have?', 'Do I have any overdue bills?'] });
         }
     }],
 
